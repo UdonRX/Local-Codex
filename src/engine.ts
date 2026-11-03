@@ -272,8 +272,9 @@ export class LocalModelEngine {
       ? file.name
       : file.name.replace(/-\d{5}-of-\d{5}\.gguf$/i, '.gguf');
     const report = createLoadDiagnosticReporter(displayFileName, totalFileSize);
+    const startedAt = performance.now();
     let currentPhase = '入力検査';
-    let phaseStartedAt = performance.now();
+    let phaseStartedAt = startedAt;
     let heartbeatBusy = false;
     const elapsed = () => Number(((performance.now() - startedAt) / 1000).toFixed(1));
     const setPhase = (phase: string, message: string, details: Record<string, unknown> = {}) => {

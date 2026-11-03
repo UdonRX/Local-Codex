@@ -258,7 +258,7 @@ function App() {
       outputChunks: metrics.outputChunks,
       chunksPerSecondEstimate: metrics.chunksPerSecondEstimate,
       loadDurationMs,
-      fileName: loadedModel,
+      fileName: loadedModel ?? undefined,
       fileSizeBytes: selectedFiles.reduce((sum, item) => sum + item.size, 0),
       output,
       score: Number(score),
