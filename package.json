@@ -10,7 +10,7 @@
     "typecheck": "tsc -b --pretty"
   },
   "dependencies": {
-    "@wllama/wllama": "^3.0.0",
+    "@wllama/wllama": "3.8.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
