@@ -199,17 +199,12 @@ export class LocalModelEngine {
       await this.unload();
     }
 
-    // Separate WASM asset fetch/compile from worker startup. This does not prove that
-    // the worker or llama.cpp native module can start, but it isolates asset/compile failures.
-    setPhase('WASMファイル取得・コンパイル事前検査', 'WASMファイルを取得・コンパイル検査中');
-    const wasmStartedAt = performance.now();
-    const wasmResponse = await fetch(wasmUrl);
-    if (!wasmResponse.ok) throw new Error('WASMファイル取得失敗: HTTP ' + wasmResponse.status);
-    const wasmBytes = await wasmResponse.arrayBuffer();
-    await WebAssembly.compile(wasmBytes);
-    console.info('[Local Codex][WASM Preflight] compile success', {
-      wasmBytes: wasmBytes.byteLength,
-      elapsedSeconds: Number(((performance.now() - wasmStartedAt) / 1000).toFixed(2))
+    // The default wllama WASM uses Memory64, which current Safari/iOS does not parse.
+    // Enable the official Safari compatibility build before any WASM is fetched or compiled.
+    setPhase('Safari互換WASMを準備中', 'iPhone用のSafari互換WASMを準備中');
+    console.info('[Local Codex][WASM Compatibility] Safari/Memory64 fallback enabled', {
+      strategy: 'wllama.setCompat(default)',
+      note: 'Memory64非対応ブラウザではAsyncify + wasm32互換ビルドを使用する'
     });
 
     setPhase('WASMランタイム生成', 'wllamaランタイムを生成中');
@@ -224,10 +219,12 @@ export class LocalModelEngine {
         }
       }
     );
+    runtime.setCompat('default');
     console.info('[Local Codex][Runtime Info]', {
       libllamaVersion: Wllama.getLibllamaVersion(),
       webGPUAvailable: runtime.isSupportWebGPU(),
       loadMode: 'CPU only / single thread',
+      wasmCompatibility: 'Safari compatibility enabled (automatic fallback)',
       ggufArchitecture: header.architecture ?? 'unknown'
     });
 
