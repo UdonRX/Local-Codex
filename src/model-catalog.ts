@@ -28,21 +28,21 @@ export const modelCandidates: ModelCandidate[] = [
   },
   {
     id: 'qwen35-4b-q4', name: 'Qwen3.5 4B', family: 'Qwen 3.5', parameters: '4B',
-    quantization: 'Q4_K_M', estimatedSize: '約2.8 GB', sizeBytes: 2_800_000_000,
+    quantization: 'Q4_K_M', estimatedSize: '約2.78 GB（要分割）', sizeBytes: 2_780_000_000,
     purpose: '品質重視の上位候補', status: 'secondary-test',
     repoUrl: 'https://huggingface.co/SoAIHQ/Qwen3.5-4B-GGUF',
     fileUrl: 'https://huggingface.co/SoAIHQ/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
     license: 'Apache-2.0（元モデルの条件を確認）',
-    notes: '初期ブラウザローダーの2GB制約を超える可能性がある。分割ファイル対応を確認してから実機ロードする。'
+    notes: '単一GGUFは2GBを超えるため、PCでllama-gguf-splitを使い512MB程度に分割して全パーツを選択する。実機メモリとwllamaのqwen35対応も確認する。'
   },
   {
     id: 'gemma4-e2b-q4', name: 'Gemma 4 E2B', family: 'Gemma 4',
     parameters: '2.3B effective / 5.1B incl. embeddings', quantization: 'Q4_K_M',
-    estimatedSize: '約2.9 GiB', purpose: 'モバイル向け推論・コーディング能力の比較',
+    estimatedSize: '約3.11 GB（要分割）', sizeBytes: 3_110_000_000, purpose: 'モバイル向け推論・コーディング能力の比較',
     status: 'secondary-test', repoUrl: 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF',
     fileUrl: 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf',
     license: 'Gemma Terms of Use（Apache-2.0ではない）',
-    notes: 'Googleのモデルカードはcoding・reasoning・function calling対応を説明。GGUFサイズが大きいため分割ロードとライセンス条件を確認する。'
+    notes: '単一GGUFは約3.11GB。PCでllama-gguf-splitを使い512MB程度に分割して全パーツを選択する。Gemma 4アーキテクチャがwllama内蔵llama.cppで動くか、実機で先に確認する。'
   },
   {
     id: 'gemma4-e4b-q4', name: 'Gemma 4 E4B', family: 'Gemma 4',

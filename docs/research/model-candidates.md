@@ -8,8 +8,8 @@ Research snapshot: 2026-11-03. Candidate selection is provisional. The user's iP
 |---|---:|---|---|
 | Qwen3.5 2B | Q4_K_M / ~1.3 GB | Main quality-vs-size candidate | First load test |
 | LFM2 2.6B | Q4_K_M / ~1.56 GB | Speed and memory baseline | First load test |
-| Qwen3.5 4B | Q4_K_M / ~2.8 GB | Higher-quality candidate | Wait for split support |
-| Gemma 4 E2B | Q4_K_M / ~2.9 GiB | Mobile-oriented reasoning/coding | Wait for split support |
+| Qwen3.5 4B | Q4_K_M / ~2.78 GB | Higher-quality candidate | Requires GGUF split into <=512MB shards |
+| Gemma 4 E2B | Q4_K_M / ~3.11 GB | Mobile-oriented reasoning/coding | Requires GGUF split; architecture compatibility must be proven |
 | Gemma 4 E4B | Q4_K_M / ~4.6 GiB | Higher-quality, memory-heavy candidate | Research only initially |
 | Qwen3-Coder-Next | Q4_K_M / ~48.4 GB | Agentic coding ceiling reference | Not an iPhone local candidate |
 
@@ -26,7 +26,7 @@ Research snapshot: 2026-11-03. Candidate selection is provisional. The user's iP
 ### LFM2 2.6B GGUF
 - Repository: https://huggingface.co/LiquidAI/LFM2-2.6B-GGUF
 - Q4_K_M file: `LFM2-2.6B-Q4_K_M.gguf`
-- Approximate size: 1.56 GB.
+- Approximate size: 1.56 GB (below wllama's per-file 2GB limit).
 - Role: speed/memory reference, not a coding-specialized winner.
 - License: LFM Open License; read its terms before redistribution or commercial use.
 - Risks: general conversational performance may not translate into multi-file coding quality.
@@ -34,16 +34,17 @@ Research snapshot: 2026-11-03. Candidate selection is provisional. The user's iP
 ### Qwen3.5 4B GGUF
 - Repository: https://huggingface.co/SoAIHQ/Qwen3.5-4B-GGUF
 - Q4_K_M file: `Qwen3.5-4B-Q4_K_M.gguf`
-- Approximate size: 2.8 GB.
+- Approximate size: 2.78 GB.
 - Role: higher-quality comparison.
-- Risks: exceeds the initial 2 GB single-file loader limit. Sharded download/cache handling has not been implemented or validated.
+- The app accepts a complete set of GGUF split files. Split the monolithic source on a PC with llama-gguf-split --split-max-size 512M.
+- Risks: iPhone memory pressure and actual Qwen3.5 4B runtime compatibility remain untested.
 
 ### Gemma 4 E2B / E4B
 - Repositories: https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF and https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF
 - Q4_K_M approximate sizes: E2B ~2.9 GiB; E4B ~4.6 GiB.
 - Google describes Gemma 4 as open-weight models for coding, reasoning, and agentic workflows with native function-calling support.
 - License: Gemma Terms of Use, not Apache-2.0. Confirm that the terms fit the intended use.
-- Risks: model size, context/KV cache, device thermal throttling, browser process memory, and wllama architecture compatibility.
+- Risks: model size, context/KV cache, device thermal throttling, browser process memory, and whether the wllama 3.8.1 bundled llama.cpp build recognizes the gemma4 architecture. A successful GGUF header read is not sufficient; native load must pass.
 
 ### Qwen3-Coder-Next
 - Repository: https://huggingface.co/Qwen/Qwen3-Coder-Next-GGUF

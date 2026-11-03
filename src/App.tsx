@@ -7,8 +7,25 @@ import { modelCandidates } from './model-catalog';
 
 type Tab = 'overview' | 'models' | 'benchmark' | 'blueprint';
 type SavedResult = {
-  model: string; task: string; timestamp: string; elapsedMs: number;
-  tokensPerSecond: number | null; output: string; score: number | null;
+  model: string;
+  modelId?: string;
+  task: string;
+  taskId?: string;
+  timestamp: string;
+  elapsedMs: number;
+  firstTokenMs?: number | null;
+  outputChunks?: number;
+  chunksPerSecondEstimate?: number | null;
+  tokensPerSecond?: number | null;
+  loadDurationMs?: number | null;
+  fileName?: string;
+  fileSizeBytes?: number;
+  output: string;
+  score: number | null;
+  isStandalone?: boolean;
+  platform?: string;
+  userAgent?: string;
+  hardwareConcurrency?: number | null;
 };
 const engine = new LocalModelEngine();
 
@@ -17,7 +34,11 @@ function App() {
   const [device, setDevice] = useState<DeviceCapabilities | null>(null);
   const [selectedModel, setSelectedModel] = useState(modelCandidates[0].id);
   const [file, setFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [loadedModel, setLoadedModel] = useState<string | null>(null);
+  const [loadedModelId, setLoadedModelId] = useState<string | null>(null);
+  const [loadDurationMs, setLoadDurationMs] = useState<number | null>(null);
+  const [runIsWarmup, setRunIsWarmup] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loadingStage, setLoadingStage] = useState<string | null>(() => {
     try {
@@ -116,7 +137,7 @@ function App() {
 
   async function loadModel() {
     if (busy) return;
-    if (!file) {
+    if (selectedFiles.length === 0 || !file) {
       const message = 'GGUFファイルが選択されていません。「ファイルを選択」からGGUFを選んでね。';
       setLoadError(message);
       setLoadingStage('GGUFファイル未選択');
@@ -126,7 +147,8 @@ function App() {
     const startedAt = Date.now();
     console.info('[Local Codex][Model Load] 読み込みボタンのクリックを検知', {
       fileName: file.name,
-      fileSizeBytes: file.size,
+      fileCount: selectedFiles.length,
+      fileSizeBytes: selectedFiles.reduce((sum, item) => sum + item.size, 0),
       timestamp: new Date(startedAt).toISOString()
     });
     // Force React to paint the loading state synchronously before starting any
@@ -143,7 +165,7 @@ function App() {
       setStatus('読み込みボタンを検知。GGUFの読み込み処理を開始します');
     });
     try {
-      localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'running', stage: '読み込みを準備中', startedAt: new Date(startedAt).toISOString(), stageStartedAt: new Date(startedAt).toISOString(), fileName: file.name, fileSize: file.size }));
+      localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'running', stage: '読み込みを準備中', startedAt: new Date(startedAt).toISOString(), stageStartedAt: new Date(startedAt).toISOString(), fileName: file.name, fileCount: selectedFiles.length, fileSize: selectedFiles.reduce((sum, item) => sum + item.size, 0) }));
     } catch (storageError) {
       console.warn('[Local Codex][Model Load] 診断状態を保存できません', storageError);
     }
@@ -151,13 +173,14 @@ function App() {
     setMetrics(null);
     console.info('[Local Codex][Model Load] 読み込み開始', {
       fileName: file.name,
-      fileSizeBytes: file.size,
-      fileSizeMB: Number((file.size / 1024 ** 2).toFixed(1)),
+      fileCount: selectedFiles.length,
+      fileSizeBytes: selectedFiles.reduce((sum, item) => sum + item.size, 0),
+      fileSizeMB: Number((selectedFiles.reduce((sum, item) => sum + item.size, 0) / 1024 ** 2).toFixed(1)),
       userAgent: navigator.userAgent
     });
     try {
       // Start the engine directly after the synchronous UI update above.
-      await engine.load(file, (stage) => {
+      await engine.load(selectedFiles, (stage) => {
         const stageSince = Date.now();
         setLoadingStage(stage);
         setLoadingStageSince(stageSince);
@@ -165,12 +188,17 @@ function App() {
         setStageStalled(false);
         setStatus('モデルを読み込み中：' + stage);
         try {
-          localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'running', stage, startedAt: new Date(startedAt).toISOString(), stageStartedAt: new Date(stageSince).toISOString(), fileName: file.name, fileSize: file.size }));
+          localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'running', stage, startedAt: new Date(startedAt).toISOString(), stageStartedAt: new Date(stageSince).toISOString(), fileName: file.name, fileCount: selectedFiles.length, fileSize: selectedFiles.reduce((sum, item) => sum + item.size, 0) }));
         } catch (storageError) {
           console.warn('[Local Codex][Model Load] 診断状態を保存できません', storageError);
         }
       });
-      setLoadedModel(file.name);
+      const loadedName = selectedFiles.length === 1
+        ? selectedFiles[0].name
+        : selectedFiles[0].name.replace(/-\d{5}-of-\d{5}\.gguf$/i, '.gguf');
+      setLoadedModel(loadedName);
+      setLoadedModelId(selectedModel);
+      setLoadDurationMs(Date.now() - startedAt);
       setLoadError(null);
       setLoadingStage(null);
       setLoadingStageSince(null);
@@ -192,6 +220,8 @@ function App() {
       }
       setStatus('モデル読み込みに失敗しました：' + message);
       setLoadedModel(null);
+      setLoadedModelId(null);
+      setLoadDurationMs(null);
     } finally {
       setBusy(false);
       // Keep the last stage and error visible after a fast failure. Clear them only
@@ -203,12 +233,12 @@ function App() {
     }
   }
 
-  async function runPrompt(text: string) {
+  async function runPrompt(text: string, isWarmup = false) {
     if (!loadedModel) { setStatus('先にGGUFモデルを読み込んでください'); return; }
-    setBusy(true); setOutput(''); setMetrics(null); setStatus('生成中');
+    setBusy(true); setOutput(''); setMetrics(null); setRunIsWarmup(isWarmup); setStatus(isWarmup ? 'ウォームアップ生成中' : 'ベンチマーク生成中');
     try {
       const result = await engine.generate(text, setOutput);
-      setMetrics(result); setStatus('生成完了');
+      setMetrics(result); setStatus(isWarmup ? 'ウォームアップ完了（結果は保存しない）' : '生成完了');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '生成に失敗しました');
     } finally { setBusy(false); }
@@ -216,18 +246,79 @@ function App() {
 
   function saveBenchmarkResult() {
     if (!metrics) return;
+    const modelInfo = modelCandidates.find((item) => item.id === loadedModelId);
     setResults((current) => [{
-      model: loadedModel || 'unknown', task: task.title, timestamp: new Date().toISOString(),
-      elapsedMs: metrics.elapsedMs, tokensPerSecond: metrics.tokensPerSecond,
-      output, score: Number(score)
+      model: modelInfo?.name ?? loadedModel ?? 'unknown',
+      modelId: loadedModelId ?? undefined,
+      task: task.title,
+      taskId: task.id,
+      timestamp: new Date().toISOString(),
+      elapsedMs: metrics.elapsedMs,
+      firstTokenMs: metrics.firstTokenMs,
+      outputChunks: metrics.outputChunks,
+      chunksPerSecondEstimate: metrics.chunksPerSecondEstimate,
+      loadDurationMs,
+      fileName: loadedModel,
+      fileSizeBytes: selectedFiles.reduce((sum, item) => sum + item.size, 0),
+      output,
+      score: Number(score),
+      isStandalone: window.matchMedia('(display-mode: standalone)').matches,
+      platform: navigator.platform,
+      userAgent: navigator.userAgent,
+      hardwareConcurrency: navigator.hardwareConcurrency || null
     }, ...current]);
   }
 
   async function unloadModel() {
     setBusy(true);
-    try { await engine.unload(); setLoadedModel(null); setFile(null); setStatus('モデルを解放しました'); }
+    try { await engine.unload(); setLoadedModel(null); setLoadedModelId(null); setLoadDurationMs(null); setFile(null); setSelectedFiles([]); setStatus('モデルを解放しました'); }
     catch (error) { setStatus(error instanceof Error ? error.message : 'モデル解放に失敗しました'); }
     finally { setBusy(false); }
+  }
+
+  const comparisonRows = useMemo(() => modelCandidates.flatMap((model) =>
+    [false, true].map((isStandalone) => {
+      const rows = results.filter((result) =>
+        result.modelId === model.id && Boolean(result.isStandalone) === isStandalone
+      );
+      const average = (values: (number | null | undefined)[]) => {
+        const valid = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+        return valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : null;
+      };
+      return {
+        model,
+        isStandalone,
+        count: rows.length,
+        loadMs: average(rows.map((row) => row.loadDurationMs)),
+        ttftMs: average(rows.map((row) => row.firstTokenMs)),
+        chunksPerSecond: average(rows.map((row) => row.chunksPerSecondEstimate ?? row.tokensPerSecond)),
+        score: average(rows.map((row) => row.score))
+      };
+    })
+  ), [results]);
+
+  function exportBenchmarkResults(format: 'csv' | 'json') {
+    if (results.length === 0) return;
+    const content = format === 'json'
+      ? JSON.stringify({ exportedAt: new Date().toISOString(), protocol: { context: 512, maxTokens: 512, temperature: 0.1, threads: 1 }, results }, null, 2)
+      : [
+          ['modelId','model','taskId','task','timestamp','loadMs','ttftMs','generationMs','outputChunks','chunksPerSecondEstimate','score','fileName','fileSizeBytes','isStandalone','platform','hardwareConcurrency'].join(','),
+          ...results.map((row) => [
+            row.modelId, row.model, row.taskId, row.task, row.timestamp, row.loadDurationMs,
+            row.firstTokenMs, row.elapsedMs, row.outputChunks, row.chunksPerSecondEstimate ?? row.tokensPerSecond,
+            row.score, row.fileName, row.fileSizeBytes, row.isStandalone, row.platform, row.hardwareConcurrency
+          ].map((value) => {
+            const text = value === null || value === undefined ? '' : String(value);
+            return '"' + text.replace(/"/g, '""') + '"';
+          }).join(','))
+        ].join('\r\n');
+    const blob = new Blob([content], { type: format === 'json' ? 'application/json;charset=utf-8' : 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `local-codex-benchmark-${new Date().toISOString().slice(0,10)}.${format}`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   return (
@@ -300,18 +391,28 @@ function App() {
           <p className="muted">大容量モデルはダウンロード前にファイルサイズとiPhoneの空き容量を確認してね。モデルのライセンスは利用前に原文を確認すること。</p>
         </div>
         <div className="info-card"><h3>GGUFを読み込む</h3><p>まずは2GB未満のGGUFをiPhoneの「ファイル」に保存して選択する。初期ローダーでは2GB以上の単一ファイルは対象外。</p>
-          <input className="file-input" type="file" accept=".gguf" onChange={(event) => {
-            const selected = event.target.files?.[0] ?? null;
-            setFile(selected);
+          <input className="file-input" type="file" accept=".gguf" multiple onChange={(event) => {
+            const selected = Array.from(event.target.files ?? []);
+            setSelectedFiles(selected);
+            setFile(selected[0] ?? null);
             setLoadError(null);
             setLoadingStage(null);
-            setStatus(selected ? 'GGUFファイルを選択しました' : 'GGUFファイルが未選択です');
+            const total = selected.reduce((sum, item) => sum + item.size, 0);
+            setStatus(selected.length > 1
+              ? `${selected.length}個のGGUF分割ファイルを選択しました（合計 ${(total / 1024 ** 3).toFixed(2)} GB）`
+              : selected.length === 1 ? 'GGUFファイルを選択しました' : 'GGUFファイルが未選択です');
           }} />
-          {file
-            ? <div className="selected-file">{file.name} · {(file.size / 1024 ** 3).toFixed(2)} GB</div>
+          {selectedFiles.length > 0
+            ? <div className="selected-file">
+                {selectedFiles.length === 1
+                  ? `${file?.name} · ${(file!.size / 1024 ** 3).toFixed(2)} GB`
+                  : `${selectedFiles.length}個の分割ファイル · 合計 ${(selectedFiles.reduce((sum, item) => sum + item.size, 0) / 1024 ** 3).toFixed(2)} GB`}
+                {selectedFiles.map((item) => <div key={item.name}>{item.name} · {(item.size / 1024 ** 2).toFixed(0)} MB</div>)}
+              </div>
             : <p className="muted">まだファイルが選択されていません。先にGGUFファイルを選んでね。</p>}
-          <button type="button" className="primary-button" disabled={busy} onClick={() => { console.info("[Local Codex][UI] GGUF読み込みボタンが押されました"); void loadModel(); }}>{busy ? '処理中…' : 'このGGUFをiPhone内で読み込む'}</button>
-          {loadedModel && <div className="loaded-row"><span>読み込み済み：{loadedModel}</span><button className="text-button" onClick={unloadModel} disabled={busy}>解放</button></div>}
+          <p className="muted">2GB以上のモデルは、PCでllama-gguf-splitを使って512MB程度に分割し、全パーツをまとめて選択してね。単純なファイル分割ではなくGGUF専用ツールが必要。</p>
+          <button type="button" className="primary-button" disabled={busy || selectedFiles.length === 0} onClick={() => { console.info("[Local Codex][UI] GGUF読み込みボタンが押されました"); void loadModel(); }}>{busy ? '処理中…' : '選択したGGUFをiPhone内で読み込む'}</button>
+          {loadedModel && <div className="loaded-row"><span>読み込み済み：{loadedModel} {loadDurationMs !== null ? `· 読み込み ${(loadDurationMs / 1000).toFixed(1)}秒` : ''}</span><button className="text-button" onClick={unloadModel} disabled={busy}>解放</button></div>}
         </div>
       </section>}
 
@@ -325,17 +426,43 @@ function App() {
           <button className="secondary-button" onClick={() => setPrompt(task.prompt)}>課題文を入力欄にセット</button>
           <label className="field-label" htmlFor="prompt">プロンプト</label>
           <textarea id="prompt" rows={9} value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-          <button className="primary-button" disabled={!loadedModel || busy || !prompt.trim()} onClick={() => runPrompt(prompt)}>{busy ? '生成中…' : 'ローカルモデルで実行'}</button>
+          <button className="secondary-button" disabled={!loadedModel || busy || !prompt.trim()} onClick={() => runPrompt(prompt, true)}>ウォームアップとして実行（保存しない）</button>
+          <button className="primary-button" disabled={!loadedModel || busy || !prompt.trim()} onClick={() => runPrompt(prompt, false)}>{busy ? '生成中…' : '測定実行（結果を採点して保存）'}</button>
+          <p className="muted">比較条件は全モデル共通：context 512、max_tokens 512、temperature 0.1、CPU 1 thread。各課題はウォームアップ1回の後、測定を3回行う。</p>
         </div>
         {output && <div className="output-card"><div className="card-title-row"><h3>モデル出力</h3>{metrics && <span className="subtle-tag">{(metrics.elapsedMs / 1000).toFixed(1)} sec</span>}</div>
-          <pre>{output}</pre>{metrics && <div className="metric-strip"><span>生成時間 <b>{(metrics.elapsedMs / 1000).toFixed(2)}秒</b></span><span>概算chunk/s <b>{metrics.tokensPerSecond?.toFixed(1) ?? '—'}</b></span></div>}
+          <pre>{output}</pre>{metrics && <div className="metric-strip">
+            <span>生成時間 <b>{(metrics.elapsedMs / 1000).toFixed(2)}秒</b></span>
+            <span>初回出力 TTFT <b>{metrics.firstTokenMs === null ? '—' : (metrics.firstTokenMs / 1000).toFixed(2) + '秒'}</b></span>
+            <span>概算chunk/s <b>{metrics.chunksPerSecondEstimate?.toFixed(1) ?? '—'}</b></span>
+            <span>出力chunk数 <b>{metrics.outputChunks}</b></span>
+          </div>}
           <label className="field-label" htmlFor="score">手動品質スコア（1〜5）</label>
           <select id="score" value={score} onChange={(event) => setScore(event.target.value)}><option value="1">1 — 要件を満たさない</option><option value="2">2 — 大きな欠落</option><option value="3">3 — 部分的に正しい</option><option value="4">4 — ほぼ正しい</option><option value="5">5 — 正確・完全</option></select>
-          <button className="primary-button" onClick={saveBenchmarkResult}>この結果を保存</button>
+          {runIsWarmup
+            ? <p className="muted">これはウォームアップ結果。比較データには保存しないでね。</p>
+            : <button className="primary-button" onClick={saveBenchmarkResult}>採点して比較データに保存</button>}
         </div>}
-        <div className="info-card"><h3>保存済み結果</h3>
-          {results.length === 0 ? <p className="muted">まだ結果はありません。モデルを読み込んで課題を実行してね。</p> : results.map((result, index) => <div className="result-row" key={result.timestamp + index}>
-            <div><strong>{result.model}</strong><span>{result.task} · {new Date(result.timestamp).toLocaleString()}</span></div><div className="result-score">{result.score ?? '—'}/5</div>
+        <div className="info-card">
+          <h3>モデル別の比較表</h3>
+          <p className="muted">保存した測定結果の平均値。scoreは手動採点の平均。chunk/sはトークン速度ではなく、ストリームchunk数による参考値。</p>
+          <div className="comparison-table-wrap"><table className="comparison-table">
+            <thead><tr><th>起動</th><th>モデル</th><th>回数</th><th>読込</th><th>TTFT</th><th>chunk/s</th><th>品質</th></tr></thead>
+            <tbody>{comparisonRows.map((row) => <tr key={row.model.id + String(row.isStandalone)}>
+              <td>{row.isStandalone ? 'PWA' : 'Safari'}</td><td>{row.model.name}</td><td>{row.count}</td>
+              <td>{row.loadMs === null ? '—' : (row.loadMs / 1000).toFixed(1) + 's'}</td>
+              <td>{row.ttftMs === null ? '—' : (row.ttftMs / 1000).toFixed(1) + 's'}</td>
+              <td>{row.chunksPerSecond === null ? '—' : row.chunksPerSecond.toFixed(1)}</td>
+              <td>{row.score === null ? '—' : row.score.toFixed(2) + '/5'}</td>
+            </tr>)}</tbody>
+          </table></div>
+          <div className="export-actions">
+            <button className="secondary-button" disabled={results.length === 0} onClick={() => exportBenchmarkResults('csv')}>CSVを書き出す</button>
+            <button className="secondary-button" disabled={results.length === 0} onClick={() => exportBenchmarkResults('json')}>JSONを書き出す</button>
+          </div>
+          <h3>保存済み結果（{results.length}件）</h3>
+          {results.length === 0 ? <p className="muted">まだ結果はありません。モデルを読み込んで課題を実行してね。</p> : results.slice(0, 30).map((result, index) => <div className="result-row" key={result.timestamp + index}>
+            <div><strong>{result.model}</strong><span>{result.task} · TTFT {result.firstTokenMs == null ? '—' : (result.firstTokenMs / 1000).toFixed(1) + 's'} · {new Date(result.timestamp).toLocaleString()}</span></div><div className="result-score">{result.score ?? '—'}/5</div>
           </div>)}
           {results.length > 0 && <button className="text-button" onClick={() => { setResults([]); localStorage.removeItem('local-codex-results'); }}>結果を全削除</button>}
         </div>

@@ -25,7 +25,9 @@ Keep prompts, context length, temperature, and output cap the same for model com
 - Model load time.
 - Time to first visible token (TTFT).
 - End-to-end generation time.
-- Approximate tokens/second. The current prototype counts streamed chunks, not tokenizer tokens; label this **chunk/s estimate**, not exact tok/s, until tokenizer-aware measurement is added.
+- Time to first visible output (TTFT).
+- Streamed chunk count and **chunk/s estimate**. A streamed chunk is not a tokenizer token; do not label this tok/s.
+- Model load duration for the current model session.
 - Whether the app is terminated/reloaded.
 - Thermal slowdown across repeated runs.
 - Manual quality score 1–5 using the task rubric.
@@ -34,14 +36,13 @@ Keep prompts, context length, temperature, and output cap the same for model com
 ## Run protocol
 
 1. Restart the PWA and ensure no model is loaded.
-2. Record device state and select one candidate model.
-3. Load the GGUF and record load duration.
-4. Run each task once as warm-up; do not score the warm-up.
-5. Run the full task set three times per model.
-6. Score output blind where practical, using the same rubric.
-7. Unload the model and allow the device to cool before the next candidate.
-8. Repeat in both Safari and Home Screen PWA mode.
-9. Export or copy results before clearing browser storage.
+2. Select one candidate and load its GGUF file(s); the app records the load duration.
+3. For each of the four fixed tasks, run one warm-up using the dedicated warm-up button. Do not save it.
+4. Run that exact task three times with the same prompt. Score each measured output from 1–5 and save it.
+5. Repeat all four tasks for each model, without changing context (512), max output (512), temperature (0.1), or CPU thread count (1).
+6. Unload the model and allow the device to cool before the next candidate.
+7. Repeat the benchmark separately in Safari and Home Screen PWA mode; do not mix those environments in one comparison.
+8. Use the model comparison table for averages and export CSV/JSON for the raw records.
 
 ## Quality scoring
 
@@ -55,6 +56,8 @@ Keep prompts, context length, temperature, and output cap the same for model com
 
 ## Important measurement caveats
 
-The prototype currently estimates output rate by streamed chunk count. A chunk is not guaranteed to equal one token. Do not compare its number directly with published tokens/second benchmarks. Add tokenizer-aware counting or llama.cpp performance counters before making final speed claims.
+The app records TTFT, generation duration, streamed chunk count, and chunk/s estimate. A chunk is not guaranteed to equal one token, so chunk/s is only a same-engine relative indicator and must never be presented as exact tokens/second. Tokenizer-aware counting is a future improvement.
+
+For files above 2GB, wllama requires genuine GGUF shards, not arbitrary byte slices. Use llama-gguf-split --split-max-size 512M input.gguf output-prefix, then select all -00001-of-0000N.gguf parts together in the app. Every individual shard must be smaller than 2GB.
 
 The browser does not expose reliable physical RAM usage on iOS. Record load failures, app reloads, memory warnings where visible, and storage quota separately.

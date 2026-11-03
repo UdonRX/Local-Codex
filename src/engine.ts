@@ -5,7 +5,12 @@ import compatWorkerCode from '@wllama/wllama-compat/wasm/wllama.js?raw';
 import { createLoadDiagnosticReporter } from './load-telemetry';
 
 export interface GenerationMetrics {
-  text: string; elapsedMs: number; tokensPerSecond: number | null; estimatedOutputTokens: number;
+  text: string;
+  elapsedMs: number;
+  firstTokenMs: number | null;
+  outputChunks: number;
+  chunksPerSecondEstimate: number | null;
+  estimatedOutputTokens: number;
 }
 
 type LoadStageCallback = (message: string) => void;
@@ -255,9 +260,18 @@ export class LocalModelEngine {
   private runtime: Wllama | null = null;
   private loadedFileName: string | null = null;
 
-  async load(file: File, onStage?: LoadStageCallback): Promise<void> {
-    const startedAt = performance.now();
-    const report = createLoadDiagnosticReporter(file.name, file.size);
+  async load(inputFiles: File | File[], onStage?: LoadStageCallback): Promise<void> {
+    const files = (Array.isArray(inputFiles) ? [...inputFiles] : [inputFiles])
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    if (files.length === 0) throw new Error('GGUFファイルが選択されていません。');
+    const file = files[0];
+    const totalFileSize = files.reduce((sum, item) => sum + item.size, 0);
+    const splitPattern = /^(.*)-(\d{5})-of-(\d{5})\.gguf$/i;
+    const splitParts = files.map((item) => ({ file: item, match: item.name.match(splitPattern) }));
+    const displayFileName = files.length === 1
+      ? file.name
+      : file.name.replace(/-\d{5}-of-\d{5}\.gguf$/i, '.gguf');
+    const report = createLoadDiagnosticReporter(displayFileName, totalFileSize);
     let currentPhase = '入力検査';
     let phaseStartedAt = performance.now();
     let heartbeatBusy = false;
@@ -300,17 +314,38 @@ export class LocalModelEngine {
     };
 
     setPhase('ファイル検査', 'GGUFファイル情報を検査中', {
-      fileName: file.name,
-      fileSizeBytes: file.size,
-      fileSizeMB: Number((file.size / 1024 ** 2).toFixed(1)),
+      fileName: displayFileName,
+      fileNames: files.map((item) => item.name),
+      fileCount: files.length,
+      fileSizeBytes: totalFileSize,
+      fileSizeMB: Number((totalFileSize / 1024 ** 2).toFixed(1)),
       userAgent: navigator.userAgent
     });
-    if (file.size >= 2 * 1024 ** 3) {
-      throw new Error('初期ローダーでは2GB以上の単一GGUFファイルを扱いません。');
+    if (files.some((item) => item.size >= 2 * 1024 ** 3)) {
+      throw new Error('wllamaは2GB以上の単一ファイルを扱えません。2GB未満のGGUF分割ファイルをすべて選択してください。');
+    }
+    if (files.length === 1 && splitParts[0].match && Number(splitParts[0].match[3]) > 1) {
+      throw new Error('このモデルは分割GGUFです。00001から最後の番号まで、すべてのパーツを選択してください。');
+    }
+    if (files.length > 1) {
+      if (splitParts.some((part) => !part.match)) {
+        throw new Error('複数ファイルを使う場合は、llama-gguf-split形式の「-00001-of-00006.gguf」などの名前が必要です。');
+      }
+      const first = splitParts[0].match!;
+      const prefix = first[1];
+      const expectedTotal = Number(first[3]);
+      const indices = splitParts.map((part) => Number(part.match![2])).sort((a, b) => a - b);
+      const validNames = splitParts.every((part) =>
+        part.match![1] === prefix && Number(part.match![3]) === expectedTotal
+      );
+      const complete = indices.length === expectedTotal && indices.every((value, index) => value === index + 1);
+      if (!validNames || !complete) {
+        throw new Error('GGUF分割ファイルが揃っていません。同じモデルの全パーツ（00001から最終番号まで）を選択してください。');
+      }
     }
     const [header, memoryBefore] = await Promise.all([
       readGgufHeader(file),
-      collectMemorySnapshot(file.size)
+      collectMemorySnapshot(totalFileSize)
     ]);
     console.info('[Local Codex][GGUF Header]', header);
     console.info('[Local Codex][Memory Snapshot][before]', memoryBefore);
@@ -400,7 +435,7 @@ export class LocalModelEngine {
     const heartbeat = window.setInterval(() => {
       if (heartbeatBusy) return;
       heartbeatBusy = true;
-      void collectMemorySnapshot(file.size).then((memory) => {
+      void collectMemorySnapshot(totalFileSize).then((memory) => {
         const phaseSeconds = Number(((performance.now() - phaseStartedAt) / 1000).toFixed(1));
         let suspicion = '処理中。まだ原因を断定できない';
         if (currentPhase === 'wllama.loadModel内部準備') suspicion = 'wllamaのWorker準備・prepareBlobs・moduleInitのいずれかで停滞している可能性';
@@ -417,8 +452,8 @@ export class LocalModelEngine {
           suspicion,
           memory,
           gguf: header,
-          fileName: file.name,
-          fileSizeBytes: file.size,
+          fileName: displayFileName,
+          fileSizeBytes: totalFileSize,
           libllamaVersion: Wllama.getLibllamaVersion(),
           lastHeartbeatAt: new Date().toISOString()
         };
@@ -430,8 +465,8 @@ export class LocalModelEngine {
             stage: currentPhase,
             stageStartedAt: new Date(phaseStartedAt).toISOString(),
             startedAt: new Date(startedAt).toISOString(),
-            fileName: file.name,
-            fileSize: file.size,
+            fileName: displayFileName,
+            fileSize: totalFileSize,
             diagnostic
           }));
         } catch (storageError) {
@@ -658,7 +693,7 @@ export class LocalModelEngine {
         n_threads: 1,
         warmup: false
       });
-      await runtime.loadModel([file], {
+      await runtime.loadModel(files, {
         n_ctx: 512,
         n_batch: 32,
         n_ubatch: 32,
@@ -670,16 +705,16 @@ export class LocalModelEngine {
 
       if (!runtime.isModelLoaded()) throw new Error('loadModel()は終了しましたが、wllamaがモデル読み込み完了を確認できませんでした。');
       this.runtime = runtime;
-      this.loadedFileName = file.name;
+      this.loadedFileName = displayFileName;
       console.info('[Local Codex][Load Diagnosis] load success', {
         elapsedSeconds: elapsed(),
         modelMetadata: runtime.getModelMetadata(),
         loadedContextInfo: runtime.getLoadedContextInfo(),
-        memoryAfter: await collectMemorySnapshot(file.size)
+        memoryAfter: await collectMemorySnapshot(totalFileSize)
       });
-      report('load_success', { phase: currentPhase, elapsedSeconds: elapsed(), fileName: file.name, fileSizeBytes: file.size });
+      report('load_success', { phase: currentPhase, elapsedSeconds: elapsed(), fileName: displayFileName, fileNames: files.map((item) => item.name), fileCount: files.length, fileSizeBytes: totalFileSize });
       setPhase('読み込み完了', 'モデル読み込み完了', {
-        fileName: file.name,
+        fileName: displayFileName,
         threads: runtime.getNumThreads(),
         multithread: runtime.isMultithread(),
         webGPU: runtime.isSupportWebGPU(),
@@ -693,10 +728,10 @@ export class LocalModelEngine {
         diagnosis: classifyLoadError(error),
         error,
         ggufHeader: header,
-        memoryAtFailure: await collectMemorySnapshot(file.size)
+        memoryAtFailure: await collectMemorySnapshot(totalFileSize)
       });
       const errorMessage = error instanceof Error ? error.message : String(error);
-      report('load_failed', { phase: currentPhase, elapsedSeconds: elapsed(), phaseElapsedSeconds: Number(((performance.now() - phaseStartedAt) / 1000).toFixed(1)), diagnosis: classifyLoadError(error), errorMessage, errorStack: error instanceof Error ? error.stack : undefined, ggufHeader: header, memoryAtFailure: await collectMemorySnapshot(file.size) });
+      report('load_failed', { phase: currentPhase, elapsedSeconds: elapsed(), phaseElapsedSeconds: Number(((performance.now() - phaseStartedAt) / 1000).toFixed(1)), diagnosis: classifyLoadError(error), errorMessage, errorStack: error instanceof Error ? error.stack : undefined, ggufHeader: header, memoryAtFailure: await collectMemorySnapshot(totalFileSize) });
       try { await runtime.exit(); }
       catch (cleanupError) { console.error('[Local Codex][Load Diagnosis] runtime cleanup failed', cleanupError); }
       throw error;
@@ -717,6 +752,7 @@ export class LocalModelEngine {
   async generate(prompt: string, onText?: (text: string) => void): Promise<GenerationMetrics> {
     if (!this.runtime) throw new Error('先にGGUFモデルを読み込んでください。');
     const startedAt = performance.now();
+    let firstTokenMs: number | null = null;
     let text = '';
     let chunkCount = 0;
     const stream = await this.runtime.createChatCompletion({
@@ -728,12 +764,20 @@ export class LocalModelEngine {
     });
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta?.content;
-      if (delta) { text += delta; chunkCount += 1; onText?.(text); }
+      if (delta) {
+        if (firstTokenMs === null) firstTokenMs = performance.now() - startedAt;
+        text += delta;
+        chunkCount += 1;
+        onText?.(text);
+      }
     }
     const elapsedMs = performance.now() - startedAt;
     return {
-      text, elapsedMs,
-      tokensPerSecond: elapsedMs > 0 ? chunkCount / (elapsedMs / 1000) : null,
+      text,
+      elapsedMs,
+      firstTokenMs,
+      outputChunks: chunkCount,
+      chunksPerSecondEstimate: elapsedMs > 0 ? chunkCount / (elapsedMs / 1000) : null,
       estimatedOutputTokens: chunkCount
     };
   }
