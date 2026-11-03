@@ -21,6 +21,66 @@ type GgufHeaderInfo = {
   note?: string;
 };
 
+
+function diagnosticValue(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
+  if (value === null || value === undefined || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'string') return value.length > 4000 ? value.slice(0, 4000) + '…[truncated]' : value;
+  if (typeof value === 'bigint') return value.toString() + 'n';
+  if (typeof value === 'function') return `[Function ${value.name || 'anonymous'}]`;
+  if (typeof value !== 'object') return String(value);
+  if (depth >= 5) return '[Max diagnostic depth]';
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: value.message,
+      stack: typeof value.stack === 'string' ? value.stack.slice(0, 6000) : undefined,
+      cause: value.cause === undefined ? undefined : diagnosticValue(value.cause, depth + 1, seen)
+    };
+  }
+  if (Array.isArray(value)) return value.slice(0, 24).map((item) => diagnosticValue(item, depth + 1, seen));
+  if (ArrayBuffer.isView(value)) return { type: value.constructor.name, byteLength: value.byteLength };
+  if (value instanceof ArrayBuffer) return { type: 'ArrayBuffer', byteLength: value.byteLength };
+  const output: Record<string, unknown> = {};
+  for (const key of Object.keys(value as Record<string, unknown>).slice(0, 40)) {
+    try { output[key] = diagnosticValue((value as Record<string, unknown>)[key], depth + 1, seen); }
+    catch { output[key] = '[Unreadable property]'; }
+  }
+  return output;
+}
+
+function abortFieldToString(value: unknown, fallback = ''): string {
+  if (typeof value === 'string') return value;
+  if (value instanceof Error) return value.message || value.name || fallback;
+  if (value === null || value === undefined) return fallback;
+  try {
+    const serialized = JSON.stringify(diagnosticValue(value));
+    return serialized ?? String(value);
+  } catch {
+    try { return String(value); } catch { return fallback; }
+  }
+}
+
+function normalizeAbortArgs(rawArgs: unknown): [string, string, string, unknown?] {
+  const args = Array.isArray(rawArgs) ? rawArgs : [rawArgs];
+  const hasSignalType = args.length >= 2 && (args[0] === 'abort' || args[0] === 'exception');
+  const signalType = hasSignalType ? args[0] as string : 'abort';
+  const messageValue = hasSignalType ? args[1] : args[0];
+  const rawStackValue = hasSignalType ? args[2] : args[1];
+  const originalError = hasSignalType ? args[3] : args[2];
+  const message = abortFieldToString(
+    messageValue instanceof Error ? messageValue.message : messageValue,
+    originalError instanceof Error ? originalError.message : '(Workerから詳細不明のabort通知)'
+  );
+  const rawStack = typeof rawStackValue === 'string'
+    ? rawStackValue
+    : originalError instanceof Error && typeof originalError.stack === 'string'
+      ? originalError.stack
+      : abortFieldToString(rawStackValue, '');
+  return [signalType, message, rawStack, originalError];
+}
+
 type MemorySnapshot = {
   deviceMemoryGB?: number;
   jsHeapUsedMB?: number;
@@ -358,6 +418,62 @@ export class LocalModelEngine {
             }
             setPhase('moduleInit開始', 'moduleInit開始（互換Worker生成・WASMモジュール初期化）');
             const worker = Reflect.construct(target, args, newTarget) as Worker;
+            // Intercept the onmessage property used by wllama 3.8.1. Safari-compatible
+            // builds may emit signal.abort with a one-item payload, while wllama's
+            // receiver assumes the four-item Emscripten payload. Normalize only that
+            // signal and preserve the original envelope for remote diagnostics.
+            const nativeOnMessage = Object.getOwnPropertyDescriptor(target.prototype, 'onmessage');
+            if (nativeOnMessage?.set) {
+              Object.defineProperty(worker, 'onmessage', {
+                configurable: true,
+                enumerable: true,
+                get: () => nativeOnMessage.get?.call(worker) ?? null,
+                set: (handler: Worker['onmessage']) => {
+                  if (typeof handler !== 'function') {
+                    nativeOnMessage.set?.call(worker, handler);
+                    return;
+                  }
+                  const wrappedHandler: Worker['onmessage'] = function (event) {
+                    const data = event.data as Record<string, unknown> | null;
+                    if (data && data.verb === 'signal.abort') {
+                      const rawArgs = data.args;
+                      const normalizedArgs = normalizeAbortArgs(rawArgs);
+                      const rawMessage = diagnosticValue(data);
+                      const normalizedMessage = {
+                        verb: 'signal.abort',
+                        args: normalizedArgs.map((value) => diagnosticValue(value))
+                      };
+                      console.error('[Local Codex][Worker signal.abort][raw]', rawMessage);
+                      console.error('[Local Codex][Worker signal.abort][normalized]', normalizedMessage);
+                      report('worker_signal_abort', {
+                        phase: currentPhase,
+                        elapsedSeconds: elapsed(),
+                        rawWorkerMessage: rawMessage,
+                        normalizedWorkerMessage: normalizedMessage,
+                        rawArgsType: Array.isArray(rawArgs) ? 'array' : typeof rawArgs,
+                        rawArgsLength: Array.isArray(rawArgs) ? rawArgs.length : null
+                      });
+                      const normalizedData = { ...data, args: normalizedArgs };
+                      const normalizedEvent = { data: normalizedData } as MessageEvent;
+                      return handler.call(worker, normalizedEvent);
+                    }
+                    if (data && data.callbackId && data.err !== undefined) {
+                      report('worker_task_error', {
+                        phase: currentPhase,
+                        elapsedSeconds: elapsed(),
+                        callbackId: data.callbackId,
+                        rawWorkerMessage: diagnosticValue(data)
+                      });
+                    }
+                    return handler.call(worker, event);
+                  };
+                  nativeOnMessage.set?.call(worker, wrappedHandler);
+                }
+              });
+            } else {
+              console.warn('[Local Codex][Worker] onmessage setterを計測できません。生メッセージの捕捉は無効です');
+              report('worker_message_hook_unavailable', { phase: currentPhase, elapsedSeconds: elapsed() });
+            }
             worker.addEventListener('error', (event) => {
               console.error('[Local Codex][Load Phase] Worker error', {
                 message: event.message,

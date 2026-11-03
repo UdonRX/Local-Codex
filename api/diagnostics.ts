@@ -15,6 +15,9 @@ const allowedEvents = new Set([
   'wllama_log',
   'worker_error',
   'worker_messageerror',
+  'worker_signal_abort',
+  'worker_task_error',
+  'worker_message_hook_unavailable',
   'window_error',
   'unhandled_rejection',
   'load_success',
@@ -61,7 +64,7 @@ export default function handler(req: DiagnosticRequest, res: DiagnosticResponse)
   };
 
   const serialized = JSON.stringify(record);
-  if (serialized.length > 12000) {
+  if (serialized.length > 24000) {
     return res.status(413).json({ ok: false, error: 'Diagnostic payload too large' });
   }
 
