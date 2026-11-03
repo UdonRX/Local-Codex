@@ -12,3 +12,13 @@
 .field-label{display:block;font-size:10px;color:var(--muted);margin:12px 0 7px}select,textarea{width:100%;background:#101722;border:1px solid #354257;color:#eef2fa;border-radius:10px;padding:11px;font-size:12px}textarea{resize:vertical;line-height:1.6}.task-rubric{display:flex;flex-direction:column;gap:6px;margin:12px 0;color:var(--muted);font-size:11px}.task-rubric strong{color:#e5ebf5}.output-card pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;background:#0d121a;border:1px solid var(--line);border-radius:11px;padding:12px;font-size:11px;line-height:1.6;color:#d8e2f2}.metric-strip{font-size:10px;color:var(--muted);padding:7px 0}.metric-strip b{color:#fff;margin-left:5px}.result-row{padding:11px 0;border-bottom:1px solid var(--line)}.result-row:last-of-type{border-bottom:0}.result-row div:first-child{display:flex;flex-direction:column;gap:4px;min-width:0}.result-row strong{font-size:11px;overflow-wrap:anywhere}.result-row span{font-size:10px;color:var(--muted)}.result-score{color:var(--green);font-weight:700;white-space:nowrap}
 .blueprint-card span{font-size:10px;letter-spacing:.12em;color:var(--blue);font-weight:700}.blueprint-card p{margin-bottom:0}.footer{border-top:1px solid var(--line);margin-top:34px;padding:20px 0 calc(16px + env(safe-area-inset-bottom))}.footer-brand{font-size:11px;font-weight:800;letter-spacing:.14em}.footer-brand span{margin-left:8px;font-weight:400}.footer p{font-size:10px;line-height:1.6;color:#aab5c6}
 @media(min-width:620px){.app-shell{padding-left:26px;padding-right:26px}.capability-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.content-stack{gap:15px}}
+
+.model-loading-panel{margin-top:13px;padding:14px;border:1px solid #53698c;border-radius:13px;background:#121b29}
+.loading-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px}
+.loading-heading strong{color:#eaf0fb}.loading-heading span{color:var(--blue);font-size:11px;font-variant-numeric:tabular-nums}
+.loading-stage{margin-top:9px;color:#b9c8df;font-size:11px;line-height:1.5}
+.progress-track{height:8px;margin-top:12px;overflow:hidden;border-radius:999px;background:#29364b}
+.progress-indicator{width:34%;height:100%;border-radius:999px;background:linear-gradient(90deg,#7899e8,#c0d0ff);animation:loading-sweep 1.5s ease-in-out infinite alternate}
+.model-loading-panel p{margin:10px 0 0;color:var(--muted);font-size:10px;line-height:1.6}
+@keyframes loading-sweep{from{transform:translateX(-8%)}to{transform:translateX(205%)}}
+@media(prefers-reduced-motion:reduce){.progress-indicator{animation:none;width:100%;opacity:.55}}
