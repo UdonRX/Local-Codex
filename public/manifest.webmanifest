@@ -1,0 +1,19 @@
+{
+  "name": "Local Codex Research Lab",
+  "short_name": "Local Codex",
+  "description": "iPhone-first local coding model benchmark lab",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#10141d",
+  "theme_color": "#10141d",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
