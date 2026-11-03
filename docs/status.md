@@ -20,7 +20,7 @@ Last updated: 2026-11-03
 | 3. Coding Agent architecture | Not started | Initial direction documented; detailed design pending. |
 | 4. GitHub and file editing engine | Not started | High-level direction documented; implementation design pending. |
 | 5. iPhone UI/UX | Not started | Foundation principles and initial research UI exist; product UX is not approved. |
-| 6. PC initial development | Not started | PWA scaffold exists and the first GitHub Actions typecheck/build passed. Full development and PC/manual testing are not complete. |
+| 6. PC initial development | Not started | PWA scaffold exists and GitHub Actions typecheck/build passed. Full development and PC/manual testing are not complete. |
 | 7. iPhone validation | Not started | Requires user-run test on target iPhone. |
 | 8. Final quality pass | Not started | Not started. |
 
@@ -37,9 +37,10 @@ Last updated: 2026-11-03
 
 ## Validation evidence
 
-- GitHub Actions Validate PWA passed for commit b432cd3988732f06007a1e68eb1720000ff3817d: npm install and npm run build (TypeScript + Vite production build) succeeded.
-- A subsequent commit only adjusted the GitHub Pages enablement workflow; its CI run is queued.
-- The first Pages deployment attempt built successfully but failed at the Pages configuration step because Pages was not enabled. The workflow was updated to request automatic enablement; deployment is pending re-run.
+- GitHub Actions Validate PWA passed on commits b432cd3988732f06007a1e68eb1720000ff3817d and 6eb2d0a7f75522779974ccf9cec148ada179ea61. npm install and npm run build (TypeScript + Vite production build) succeeded.
+- The Pages workflow also completed npm install and npm run build successfully.
+- Pages deployment stopped at Configure Pages: the repository has not enabled Pages, and the connected GitHub integration cannot create the Pages site automatically (GitHub returned “Resource not accessible by integration”).
+- One-time user action required: open **Repository Settings → Pages → Build and deployment → Source: GitHub Actions**. After this is enabled, rerun the Pages workflow or push a new commit.
 - No iPhone execution, model load, or performance measurement has been completed.
 
 ## Known gaps / blockers
@@ -55,4 +56,4 @@ Last updated: 2026-11-03
 
 ## Next action
 
-Wait for the GitHub Pages workflow to complete, open the HTTPS PWA on the target iPhone, record device diagnostics in both Safari and Home Screen mode, then load the first sub-2-GB GGUF model.
+Enable GitHub Pages using the repository Settings described above, then rerun the deployment workflow. Open the HTTPS PWA on the target iPhone, record device diagnostics in both Safari and Home Screen mode, then load the first sub-2-GB GGUF model.
