@@ -20,11 +20,11 @@ Last updated: 2026-11-03
 | 3. Coding Agent architecture | Not started | Initial direction documented; detailed design pending. |
 | 4. GitHub and file editing engine | Not started | High-level direction documented; implementation design pending. |
 | 5. iPhone UI/UX | Not started | Foundation principles and initial research UI exist; product UX is not approved. |
-| 6. PC initial development | Not started | Scaffold only; no validated production build or deployment yet. |
+| 6. PC initial development | Not started | PWA scaffold exists and the first GitHub Actions typecheck/build passed. Full development and PC/manual testing are not complete. |
 | 7. iPhone validation | Not started | Requires user-run test on target iPhone. |
 | 8. Final quality pass | Not started | Not started. |
 
-## What exists in this commit
+## What exists
 
 - Vite + React + TypeScript PWA scaffold.
 - Local GGUF file loading experiment using wllama v3.
@@ -33,7 +33,14 @@ Last updated: 2026-11-03
 - Four repeatable coding benchmark prompts.
 - LocalStorage result log (prototype only).
 - Architecture, PWA constraints, UX, free-only policy, and roadmap docs.
-- GitHub Pages workflow.
+- GitHub Pages deployment workflow and CI build workflow.
+
+## Validation evidence
+
+- GitHub Actions Validate PWA passed for commit b432cd3988732f06007a1e68eb1720000ff3817d: npm install and npm run build (TypeScript + Vite production build) succeeded.
+- A subsequent commit only adjusted the GitHub Pages enablement workflow; its CI run is queued.
+- The first Pages deployment attempt built successfully but failed at the Pages configuration step because Pages was not enabled. The workflow was updated to request automatic enablement; deployment is pending re-run.
+- No iPhone execution, model load, or performance measurement has been completed.
 
 ## Known gaps / blockers
 
@@ -44,8 +51,8 @@ Last updated: 2026-11-03
 5. LocalStorage result persistence is temporary; IndexedDB migration is required.
 6. The app is not yet a Coding Agent and does not yet connect to GitHub.
 7. GitHub Pages cannot set COOP/COEP headers; multi-thread WASM is not assumed.
-8. No deployment has been performed or verified.
+8. No deployed URL has been verified yet.
 
 ## Next action
 
-Install dependencies on a PC, run the PWA locally, fix build/type errors, publish to GitHub Pages, then open the HTTPS URL on the target iPhone and record device diagnostics. After that, load the first sub-2-GB GGUF model.
+Wait for the GitHub Pages workflow to complete, open the HTTPS PWA on the target iPhone, record device diagnostics in both Safari and Home Screen mode, then load the first sub-2-GB GGUF model.
