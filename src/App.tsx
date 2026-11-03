@@ -64,7 +64,14 @@ function App() {
   }, [loadStartedAt, loadingStage]);
 
   async function loadModel() {
-    if (!file) return;
+    if (busy) return;
+    if (!file) {
+      const message = 'GGUFファイルが選択されていません。「ファイルを選択」からGGUFを選んでね。';
+      setLoadError(message);
+      setLoadingStage('GGUFファイル未選択');
+      setStatus(message);
+      return;
+    }
     const startedAt = Date.now();
     setBusy(true);
     setLoadingElapsed(0);
@@ -199,9 +206,17 @@ function App() {
           <p className="muted">大容量モデルはダウンロード前にファイルサイズとiPhoneの空き容量を確認してね。モデルのライセンスは利用前に原文を確認すること。</p>
         </div>
         <div className="info-card"><h3>GGUFを読み込む</h3><p>まずは2GB未満のGGUFをiPhoneの「ファイル」に保存して選択する。初期ローダーでは2GB以上の単一ファイルは対象外。</p>
-          <input className="file-input" type="file" accept=".gguf" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
-          {file && <div className="selected-file">{file.name} · {(file.size / 1024 ** 3).toFixed(2)} GB</div>}
-          <button className="primary-button" disabled={!file || busy} onClick={loadModel}>{busy ? '処理中…' : 'このGGUFをiPhone内で読み込む'}</button>
+          <input className="file-input" type="file" accept=".gguf" onChange={(event) => {
+            const selected = event.target.files?.[0] ?? null;
+            setFile(selected);
+            setLoadError(null);
+            setLoadingStage(null);
+            setStatus(selected ? 'GGUFファイルを選択しました' : 'GGUFファイルが未選択です');
+          }} />
+          {file
+            ? <div className="selected-file">{file.name} · {(file.size / 1024 ** 3).toFixed(2)} GB</div>
+            : <p className="muted">まだファイルが選択されていません。先にGGUFファイルを選んでね。</p>}
+          <button className="primary-button" disabled={busy} onClick={loadModel}>{busy ? '処理中…' : 'このGGUFをiPhone内で読み込む'}</button>
           {loadedModel && <div className="loaded-row"><span>読み込み済み：{loadedModel}</span><button className="text-button" onClick={unloadModel} disabled={busy}>解放</button></div>}
         </div>
       </section>}
