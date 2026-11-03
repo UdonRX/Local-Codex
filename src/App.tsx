@@ -261,8 +261,8 @@ function App() {
           <div className="progress-indicator" />
         </div>}
         {loadError
-          ? <p className="load-error-message">エラー内容：{loadError}<br />コンソールの [Local Codex] / [wllama] ログも確認してね。診断記録はこの端末内に保存されています。</p>
-          : <p>{stageStalled ? '読み込みを続けていますが、この工程は30秒以上応答していません。コンソールの [Local Codex][Load Phase] と [Load Diagnosis] のログを確認してね。' : busy ? '工程ごとの開始・終了を記録中。バーは進行中を示す表示で、正確な進捗率ではありません。' : '読み込み処理は終了しました。'}</p>}
+          ? <p className="load-error-message">エラー内容：{loadError}<br />診断ログはVercelのRuntime Logsにも送信されます。ファイル本体やモデルの内容は送信しません。</p>
+          : <p>{stageStalled ? '読み込みを続けていますが、この工程は30秒以上応答していません。VercelのRuntime Logsで [LOCAL-CODEX-DIAG] を検索してね。' : busy ? '工程ごとの開始・終了・15秒ごとの状態をVercelにも送信中。バーは正確な進捗率ではありません。' : '読み込み処理は終了しました。'}</p>}
       </section>}
 
       {tab === 'overview' && <section className="content-stack">

@@ -2,6 +2,7 @@ import { Wllama } from '@wllama/wllama';
 import wasmUrl from '@wllama/wllama/src/wasm/wllama.wasm?url';
 import compatWasmUrl from '@wllama/wllama-compat/wasm/wllama.wasm?url';
 import compatWorkerCode from '@wllama/wllama-compat/wasm/wllama.js?raw';
+import { createLoadDiagnosticReporter } from './load-telemetry';
 
 export interface GenerationMetrics {
   text: string; elapsedMs: number; tokensPerSecond: number | null; estimatedOutputTokens: number;
@@ -147,6 +148,7 @@ export class LocalModelEngine {
 
   async load(file: File, onStage?: LoadStageCallback): Promise<void> {
     const startedAt = performance.now();
+    const report = createLoadDiagnosticReporter(file.name, file.size);
     let currentPhase = '入力検査';
     let phaseStartedAt = performance.now();
     let heartbeatBusy = false;
@@ -164,6 +166,7 @@ export class LocalModelEngine {
         elapsedSeconds: elapsed(),
         ...details
       });
+      report('phase', { phase, previousPhase, previousPhaseElapsedSeconds, elapsedSeconds: elapsed(), message, details });
       onStage?.(message);
     };
     const logWllama = (level: 'debug' | 'log' | 'warn' | 'error', ...args: unknown[]) => {
@@ -171,6 +174,9 @@ export class LocalModelEngine {
         try { return JSON.stringify(item); } catch { return String(item); }
       })()).join(' ');
       console[level === 'log' ? 'info' : level === 'debug' ? 'info' : level]('[wllama][' + level + ']', ...args);
+      if (/Calling wllamaStart|Loading model|error|failed|exception|abort|memory/i.test(text)) {
+        report('wllama_log', { level, message: text.slice(0, 1600), elapsedSeconds: elapsed(), phase: currentPhase });
+      }
       if (/Calling wllamaStart/i.test(text)) {
         setPhase('moduleInit終了', 'moduleInit完了。WASMエンジン起動へ移行', { wllamaLog: text });
         setPhase('WASM起動（wllamaStart）', 'WASMエンジンを起動中', { wllamaLog: text });
@@ -271,6 +277,7 @@ export class LocalModelEngine {
           lastHeartbeatAt: new Date().toISOString()
         };
         console.warn('[Local Codex][Load Diagnosis][heartbeat]', diagnostic);
+        report('heartbeat', diagnostic);
         try {
           localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({
             state: phaseSeconds >= 30 ? 'stalled' : 'running',
@@ -293,7 +300,22 @@ export class LocalModelEngine {
     let workerPreparationFinished = false;
     let ggufPreparationStarted = false;
 
+    const onWindowError = (event: ErrorEvent) => {
+      const detail = { message: event.message, filename: event.filename, lineno: event.lineno, colno: event.colno, phase: currentPhase, elapsedSeconds: elapsed() };
+      console.error('[Local Codex][Window error]', detail);
+      report('window_error', detail);
+    };
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason instanceof Error ? { name: event.reason.name, message: event.reason.message, stack: event.reason.stack } : String(event.reason);
+      const detail = { reason, phase: currentPhase, elapsedSeconds: elapsed() };
+      console.error('[Local Codex][Unhandled rejection]', detail);
+      report('unhandled_rejection', detail);
+    };
+
     try {
+      window.addEventListener('error', onWindowError);
+      window.addEventListener('unhandledrejection', onUnhandledRejection);
+      report('load_started', { phase: currentPhase, userAgent: navigator.userAgent, platform: navigator.platform, isStandalone: window.matchMedia('(display-mode: standalone)').matches });
       // wllama 3.8.1 internal sequence:
       // Worker proxy setup -> prepareBlobs -> moduleInit -> wllamaStart -> native load.
       // The library does not expose callbacks for these internal steps, so observe
@@ -341,11 +363,15 @@ export class LocalModelEngine {
                 message: event.message,
                 filename: event.filename,
                 lineno: event.lineno,
-                elapsedSeconds: elapsed()
+                elapsedSeconds: elapsed(),
+                phase: currentPhase
               });
+              report('worker_error', { message: event.message, filename: event.filename, lineno: event.lineno, elapsedSeconds: elapsed(), phase: currentPhase });
             });
             worker.addEventListener('messageerror', (event) => {
-              console.error('[Local Codex][Load Phase] Worker messageerror', event);
+              const detail = { type: event.type, elapsedSeconds: elapsed(), phase: currentPhase };
+              console.error('[Local Codex][Load Phase] Worker messageerror', detail);
+              report('worker_messageerror', detail);
             });
             return worker;
           }
@@ -386,6 +412,7 @@ export class LocalModelEngine {
         loadedContextInfo: runtime.getLoadedContextInfo(),
         memoryAfter: await collectMemorySnapshot(file.size)
       });
+      report('load_success', { phase: currentPhase, elapsedSeconds: elapsed(), fileName: file.name, fileSizeBytes: file.size });
       setPhase('読み込み完了', 'モデル読み込み完了', {
         fileName: file.name,
         threads: runtime.getNumThreads(),
@@ -403,11 +430,16 @@ export class LocalModelEngine {
         ggufHeader: header,
         memoryAtFailure: await collectMemorySnapshot(file.size)
       });
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      report('load_failed', { phase: currentPhase, elapsedSeconds: elapsed(), phaseElapsedSeconds: Number(((performance.now() - phaseStartedAt) / 1000).toFixed(1)), diagnosis: classifyLoadError(error), errorMessage, errorStack: error instanceof Error ? error.stack : undefined, ggufHeader: header, memoryAtFailure: await collectMemorySnapshot(file.size) });
       try { await runtime.exit(); }
       catch (cleanupError) { console.error('[Local Codex][Load Diagnosis] runtime cleanup failed', cleanupError); }
       throw error;
     } finally {
       window.clearInterval(heartbeat);
+      window.removeEventListener('error', onWindowError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+      report('load_cleanup', { phase: currentPhase, elapsedSeconds: elapsed() });
       // Restore browser globals even if only one of the instrumentation hooks
       // could be installed successfully.
       window.Worker = originalWorker;
