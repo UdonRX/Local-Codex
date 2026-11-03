@@ -1,5 +1,7 @@
 import { Wllama } from '@wllama/wllama';
 import wasmUrl from '@wllama/wllama/src/wasm/wllama.wasm?url';
+import compatWasmUrl from '@wllama/wllama-compat/wasm/wllama.wasm?url';
+import compatWorkerCode from '@wllama/wllama-compat/wasm/wllama.js?raw';
 
 export interface GenerationMetrics {
   text: string; elapsedMs: number; tokensPerSecond: number | null; estimatedOutputTokens: number;
@@ -150,9 +152,18 @@ export class LocalModelEngine {
     let heartbeatBusy = false;
     const elapsed = () => Number(((performance.now() - startedAt) / 1000).toFixed(1));
     const setPhase = (phase: string, message: string, details: Record<string, unknown> = {}) => {
+      const now = performance.now();
+      const previousPhase = currentPhase;
+      const previousPhaseElapsedSeconds = Number(((now - phaseStartedAt) / 1000).toFixed(1));
       currentPhase = phase;
-      phaseStartedAt = performance.now();
-      console.info('[Local Codex][Load Diagnosis]', message, { phase, elapsedSeconds: elapsed(), ...details });
+      phaseStartedAt = now;
+      console.info('[Local Codex][Load Diagnosis]', message, {
+        phase,
+        previousPhase,
+        previousPhaseElapsedSeconds,
+        elapsedSeconds: elapsed(),
+        ...details
+      });
       onStage?.(message);
     };
     const logWllama = (level: 'debug' | 'log' | 'warn' | 'error', ...args: unknown[]) => {
@@ -161,6 +172,7 @@ export class LocalModelEngine {
       })()).join(' ');
       console[level === 'log' ? 'info' : level === 'debug' ? 'info' : level]('[wllama][' + level + ']', ...args);
       if (/Calling wllamaStart/i.test(text)) {
+        setPhase('moduleInit終了', 'moduleInit完了。WASMエンジン起動へ移行', { wllamaLog: text });
         setPhase('WASM起動（wllamaStart）', 'WASMエンジンを起動中', { wllamaLog: text });
       } else if (/Loading model/i.test(text)) {
         setPhase('GGUFモデル読み込み（ネイティブload）', 'GGUFモデル本体を解析・展開中', { wllamaLog: text });
@@ -203,8 +215,10 @@ export class LocalModelEngine {
     // Enable the official Safari compatibility build before any WASM is fetched or compiled.
     setPhase('Safari互換WASMを準備中', 'iPhone用のSafari互換WASMを準備中');
     console.info('[Local Codex][WASM Compatibility] Safari/Memory64 fallback enabled', {
-      strategy: 'wllama.setCompat(default)',
-      note: 'Memory64非対応ブラウザではAsyncify + wasm32互換ビルドを使用する'
+      strategy: 'bundled @wllama/wllama-compat 3.8.1 (no CDN)',
+      wasmAsset: 'Vite-bundled local asset',
+      workerAsset: 'Vite-bundled inline worker code',
+      note: 'Memory64非対応ブラウザでは同梱済みAsyncify + wasm32互換ビルドを使用する。実行時CDN取得なし'
     });
 
     setPhase('WASMランタイム生成', 'wllamaランタイムを生成中');
@@ -219,12 +233,15 @@ export class LocalModelEngine {
         }
       }
     );
-    runtime.setCompat('default');
+    runtime.setCompat({
+      wasm: compatWasmUrl,
+      worker: { code: compatWorkerCode }
+    });
     console.info('[Local Codex][Runtime Info]', {
       libllamaVersion: Wllama.getLibllamaVersion(),
       webGPUAvailable: runtime.isSupportWebGPU(),
       loadMode: 'CPU only / single thread',
-      wasmCompatibility: 'Safari compatibility enabled (automatic fallback)',
+      wasmCompatibility: 'Safari compatibility bundled locally (no CDN)',
       ggufArchitecture: header.architecture ?? 'unknown'
     });
 
@@ -241,24 +258,104 @@ export class LocalModelEngine {
             ? 'GGUF本体の読み込み中。メモリ不足または内蔵llama.cppのqwen35対応を切り分ける'
             : 'GGUF本体の読み込み中。メモリ不足・GGUF形式・アーキテクチャを切り分ける';
         }
-        console.warn('[Local Codex][Load Diagnosis][heartbeat]', {
+        const diagnostic = {
           phase: currentPhase,
           elapsedSeconds: elapsed(),
           phaseElapsedSeconds: phaseSeconds,
           suspicion,
           memory,
           gguf: header,
-          libllamaVersion: Wllama.getLibllamaVersion()
-        });
+          fileName: file.name,
+          fileSizeBytes: file.size,
+          libllamaVersion: Wllama.getLibllamaVersion(),
+          lastHeartbeatAt: new Date().toISOString()
+        };
+        console.warn('[Local Codex][Load Diagnosis][heartbeat]', diagnostic);
+        try {
+          localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({
+            state: phaseSeconds >= 30 ? 'stalled' : 'running',
+            stage: currentPhase,
+            stageStartedAt: new Date(phaseStartedAt).toISOString(),
+            startedAt: new Date(startedAt).toISOString(),
+            fileName: file.name,
+            fileSize: file.size,
+            diagnostic
+          }));
+        } catch (storageError) {
+          console.warn('[Local Codex][Load Diagnosis] heartbeat診断を保存できません', storageError);
+        }
       }).catch((error) => console.warn('[Local Codex][Memory Snapshot] 取得失敗', error))
         .finally(() => { heartbeatBusy = false; });
     }, 15000);
 
+    const originalWorker = window.Worker;
+    const originalBlobArrayBuffer = Blob.prototype.arrayBuffer;
+    let workerPreparationFinished = false;
+    let ggufPreparationStarted = false;
+
     try {
-      // Upstream wllama v3 sequence: Worker setup -> prepareBlobs -> moduleInit
-      // -> wllamaStart -> native model load. The debug logger marks the last two.
-      setPhase('wllama.loadModel内部準備', 'wllama内部準備中（Worker・GGUF準備・moduleInit）', {
-        note: 'Calling wllamaStartが出る前の時間はWorker準備 / prepareBlobs / moduleInit'
+      // wllama 3.8.1 internal sequence:
+      // Worker proxy setup -> prepareBlobs -> moduleInit -> wllamaStart -> native load.
+      // The library does not expose callbacks for these internal steps, so observe
+      // the Blob probe and Worker construction while loadModel is running.
+      try {
+        Blob.prototype.arrayBuffer = function (this: Blob): Promise<ArrayBuffer> {
+          if (!workerPreparationFinished) {
+            workerPreparationFinished = true;
+            setPhase('Worker準備終了', 'Worker準備完了。GGUFファイルの内部準備を開始', {
+              marker: 'wllama internal prepareBlobs probe'
+            });
+          }
+          if (!ggufPreparationStarted) {
+            ggufPreparationStarted = true;
+            setPhase('GGUF準備開始', 'GGUFファイルの内部準備中（形式判定・Blob整理）', {
+              blobSizeBytes: this.size,
+              marker: 'wllama prepareBlobs / isMmproj'
+            });
+          }
+          return originalBlobArrayBuffer.call(this).then((buffer) => {
+            console.info('[Local Codex][Load Phase] GGUFヘッダー判定用Blob読み取り完了', {
+              blobSizeBytes: this.size,
+              elapsedSeconds: elapsed()
+            });
+            return buffer;
+          });
+        };
+
+        window.Worker = new Proxy(originalWorker, {
+          construct(target, args, newTarget) {
+            if (ggufPreparationStarted) {
+              setPhase('GGUF準備終了', 'GGUF内部準備完了。Worker moduleInitを開始', {
+                marker: 'Worker construction follows prepareBlobs in wllama 3.8.1'
+              });
+            } else if (!workerPreparationFinished) {
+              workerPreparationFinished = true;
+              setPhase('Worker準備終了', 'Worker準備完了。moduleInitを開始', {
+                marker: 'Worker construction reached before Blob probe'
+              });
+            }
+            setPhase('moduleInit開始', 'moduleInit開始（互換Worker生成・WASMモジュール初期化）');
+            const worker = Reflect.construct(target, args, newTarget) as Worker;
+            worker.addEventListener('error', (event) => {
+              console.error('[Local Codex][Load Phase] Worker error', {
+                message: event.message,
+                filename: event.filename,
+                lineno: event.lineno,
+                elapsedSeconds: elapsed()
+              });
+            });
+            worker.addEventListener('messageerror', (event) => {
+              console.error('[Local Codex][Load Phase] Worker messageerror', event);
+            });
+            return worker;
+          }
+        });
+      } catch (instrumentationError) {
+        console.warn('[Local Codex][Load Phase] 内部工程計測を一部有効化できません', instrumentationError);
+      }
+
+      setPhase('Worker準備開始', 'Worker準備開始（wllama内部ロード前処理）', {
+        note: 'Worker proxy初期化・実行環境判定の開始'
       });
       console.info('[Local Codex][Load Diagnosis] wllama.loadModel enter', {
         lowMemoryDiagnosticMode: true,
@@ -311,6 +408,10 @@ export class LocalModelEngine {
       throw error;
     } finally {
       window.clearInterval(heartbeat);
+      // Restore browser globals even if only one of the instrumentation hooks
+      // could be installed successfully.
+      window.Worker = originalWorker;
+      Blob.prototype.arrayBuffer = originalBlobArrayBuffer;
     }
   }
 

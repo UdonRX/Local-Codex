@@ -22,3 +22,22 @@
 .model-loading-panel p{margin:10px 0 0;color:var(--muted);font-size:10px;line-height:1.6}
 @keyframes loading-sweep{from{transform:translateX(-8%)}to{transform:translateX(205%)}}
 @media(prefers-reduced-motion:reduce){.progress-indicator{animation:none;width:100%;opacity:.55}}
+
+
+/* Model-load phase diagnostics */
+.load-phase-time {
+  margin-top: 10px;
+  color: var(--muted, #8d98a7);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.load-stall-warning {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(235, 166, 73, 0.5);
+  border-radius: 10px;
+  background: rgba(235, 166, 73, 0.09);
+  color: #f1c27a;
+  font-size: 13px;
+  line-height: 1.55;
+}

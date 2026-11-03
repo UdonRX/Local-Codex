@@ -12,7 +12,8 @@
   "dependencies": {
     "@wllama/wllama": "3.8.1",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "@wllama/wllama-compat": "3.8.1"
   },
   "devDependencies": {
     "@types/react": "^19.1.10",

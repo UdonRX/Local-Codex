@@ -22,16 +22,29 @@ function App() {
   const [loadingStage, setLoadingStage] = useState<string | null>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('local-codex-load-diagnostic') || 'null');
-      return saved?.state === 'running' ? '前回の読み込み中に画面が終了した可能性があります' : saved?.stage ?? null;
+      return ['running', 'stalled'].includes(saved?.state) ? (saved?.stage ?? '前回の読み込みが中断されました') : saved?.stage ?? null;
     } catch { return null; }
   });
   const [loadStartedAt, setLoadStartedAt] = useState<number | null>(null);
   const [loadingElapsed, setLoadingElapsed] = useState(0);
+  const [loadingStageSince, setLoadingStageSince] = useState<number | null>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('local-codex-load-diagnostic') || 'null');
+      return saved?.stageStartedAt ? Date.parse(saved.stageStartedAt) : null;
+    } catch { return null; }
+  });
+  const [stageElapsed, setStageElapsed] = useState(0);
+  const [stageStalled, setStageStalled] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('local-codex-load-diagnostic') || 'null');
+      return saved?.state === 'stalled';
+    } catch { return false; }
+  });
   const [loadError, setLoadError] = useState<string | null>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('local-codex-load-diagnostic') || 'null');
-      return saved?.state === 'running'
-        ? '読み込み開始後にページが再起動したか、処理が中断された可能性があります。時間・端末メモリ・WASM初期化を調査するため、もう一度実行して診断記録を残してください。'
+      return ['running', 'stalled'].includes(saved?.state)
+        ? '前回の読み込みが完了せず中断、または30秒以上同じ工程で停滞しました。保存された診断情報を確認してください。'
         : saved?.error ?? null;
     } catch { return null; }
   });
@@ -65,16 +78,41 @@ function App() {
   }, [loadStartedAt]);
 
   useEffect(() => {
-    if (loadStartedAt === null || loadingStage === null) return;
-    const timer = window.setInterval(() => {
-      console.info('[Local Codex][Model Load] まだ処理中', {
-        stage: loadingStage,
-        elapsedSeconds: Math.floor((Date.now() - loadStartedAt) / 1000),
-        hint: 'この工程はwllama内部処理のため、ローカルloadModelから進捗率を取得できません'
-      });
-    }, 15000);
+    if (loadingStageSince === null || loadingStage === null) return;
+    const updateStageElapsed = () => {
+      const seconds = Math.max(0, Math.floor((Date.now() - loadingStageSince) / 1000));
+      setStageElapsed(seconds);
+      if (seconds >= 30 && !stageStalled) {
+        setStageStalled(true);
+        console.warn('[Local Codex][Model Load] 工程が30秒以上停滞', {
+          stage: loadingStage,
+          stageElapsedSeconds: seconds,
+          totalElapsedSeconds: loadStartedAt === null ? null : Math.floor((Date.now() - loadStartedAt) / 1000),
+          fileName: file?.name ?? null,
+          fileSizeBytes: file?.size ?? null,
+          action: '停滞時点の工程・ファイル情報をlocalStorageに保存'
+        });
+        try {
+          const previous = JSON.parse(localStorage.getItem('local-codex-load-diagnostic') || '{}');
+          localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({
+            ...previous,
+            state: 'stalled',
+            stage: loadingStage,
+            stageStartedAt: new Date(loadingStageSince).toISOString(),
+            stageElapsedSeconds: seconds,
+            stalledAt: new Date().toISOString(),
+            fileName: file?.name ?? previous.fileName ?? null,
+            fileSize: file?.size ?? previous.fileSize ?? null
+          }));
+        } catch (storageError) {
+          console.warn('[Local Codex][Model Load] 停滞診断を保存できません', storageError);
+        }
+      }
+    };
+    updateStageElapsed();
+    const timer = window.setInterval(updateStageElapsed, 1000);
     return () => window.clearInterval(timer);
-  }, [loadStartedAt, loadingStage]);
+  }, [loadingStageSince, loadingStage, stageStalled, loadStartedAt, file]);
 
   async function loadModel() {
     if (busy) return;
@@ -98,11 +136,14 @@ function App() {
       setLoadingElapsed(0);
       setLoadError(null);
       setLoadStartedAt(startedAt);
+      setLoadingStageSince(startedAt);
+      setStageElapsed(0);
+      setStageStalled(false);
       setLoadingStage('読み込みを開始しました');
       setStatus('読み込みボタンを検知。GGUFの読み込み処理を開始します');
     });
     try {
-      localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'running', stage: '読み込みを準備中', startedAt: new Date().toISOString(), fileName: file.name, fileSize: file.size }));
+      localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'running', stage: '読み込みを準備中', startedAt: new Date(startedAt).toISOString(), stageStartedAt: new Date(startedAt).toISOString(), fileName: file.name, fileSize: file.size }));
     } catch (storageError) {
       console.warn('[Local Codex][Model Load] 診断状態を保存できません', storageError);
     }
@@ -117,10 +158,14 @@ function App() {
     try {
       // Start the engine directly after the synchronous UI update above.
       await engine.load(file, (stage) => {
+        const stageSince = Date.now();
         setLoadingStage(stage);
+        setLoadingStageSince(stageSince);
+        setStageElapsed(0);
+        setStageStalled(false);
         setStatus('モデルを読み込み中：' + stage);
         try {
-          localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'running', stage, startedAt: new Date(startedAt).toISOString(), fileName: file.name, fileSize: file.size }));
+          localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'running', stage, startedAt: new Date(startedAt).toISOString(), stageStartedAt: new Date(stageSince).toISOString(), fileName: file.name, fileSize: file.size }));
         } catch (storageError) {
           console.warn('[Local Codex][Model Load] 診断状態を保存できません', storageError);
         }
@@ -128,6 +173,9 @@ function App() {
       setLoadedModel(file.name);
       setLoadError(null);
       setLoadingStage(null);
+      setLoadingStageSince(null);
+      setStageElapsed(0);
+      setStageStalled(false);
       localStorage.removeItem('local-codex-load-diagnostic');
       setStatus('モデル読み込み完了');
     } catch (error) {
@@ -135,6 +183,8 @@ function App() {
       const message = error instanceof Error ? error.message : 'モデル読み込みに失敗しました';
       setLoadError(message);
       setLoadingStage('読み込みに失敗しました');
+      setLoadingStageSince(null);
+      setStageStalled(false);
       try {
         localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'error', stage: '読み込みに失敗しました', error: message, failedAt: new Date().toISOString(), fileName: file.name, fileSize: file.size }));
       } catch (storageError) {
@@ -200,14 +250,19 @@ function App() {
       </nav>
       <div className="status-line"><span className="status-dot" />{status}</div>
       {loadingStage && <section className="model-loading-panel global-loading-panel" role="status" aria-live="polite">
-        <div className="loading-heading"><strong>{loadError ? 'モデル読み込みエラー' : busy ? 'モデルを読み込み中' : '前回の読み込み結果'}</strong><span>{loadingElapsed}秒</span></div>
+        <div className="loading-heading"><strong>{loadError ? 'モデル読み込みエラー' : stageStalled ? '工程が30秒以上停滞' : busy ? 'モデルを読み込み中' : '前回の読み込み結果'}</strong><span>合計 {loadingElapsed}秒</span></div>
         <div className="loading-stage">{loadingStage}</div>
+        <div className={stageStalled ? 'load-stall-warning' : 'load-phase-time'} role={stageStalled ? 'alert' : 'status'}>
+          {stageStalled
+            ? `この工程で約${stageElapsed}秒停止しています。処理が進んでいない可能性があります。工程名・開始時刻・ファイル情報を診断記録に保存しました。`
+            : `現在の工程の経過時間：${stageElapsed}秒（30秒を超えると停滞として記録）`}
+        </div>
         {busy && <div className="progress-track" role="progressbar" aria-label="モデル読み込み状況" aria-valuetext="処理中。正確な進捗率は取得できません">
           <div className="progress-indicator" />
         </div>}
         {loadError
-          ? <p className="load-error-message">エラー内容：{loadError}<br />コンソールの [Local Codex] / [wllama] ログも確認してね。もう一度試す場合は、モデルタブから再読み込みできるよ。</p>
-          : <p>{busy ? '読み込み中は画面を切り替えてもこの表示を残すよ。バーは進行中を示す表示で、正確な進捗率ではありません。' : '読み込み処理は終了しました。'}</p>}
+          ? <p className="load-error-message">エラー内容：{loadError}<br />コンソールの [Local Codex] / [wllama] ログも確認してね。診断記録はこの端末内に保存されています。</p>
+          : <p>{stageStalled ? '読み込みを続けていますが、この工程は30秒以上応答していません。コンソールの [Local Codex][Load Phase] と [Load Diagnosis] のログを確認してね。' : busy ? '工程ごとの開始・終了を記録中。バーは進行中を示す表示で、正確な進捗率ではありません。' : '読み込み処理は終了しました。'}</p>}
       </section>}
 
       {tab === 'overview' && <section className="content-stack">
