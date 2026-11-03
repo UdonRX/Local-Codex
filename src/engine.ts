@@ -48,7 +48,7 @@ export class LocalModelEngine {
       }
     );
     log('runtime-ready', 'WASMランタイムを作成しました', {
-      libllamaVersion: Wllama.getLibLlamaVersion(),
+      libllamaVersion: Wllama.getLibllamaVersion(),
       webGPUAvailable: runtime.isSupportWebGPU(),
       loadMode: 'CPU only / single thread'
     });
