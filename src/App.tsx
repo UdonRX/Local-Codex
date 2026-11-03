@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { benchmarkTasks } from './benchmark-tasks';
 import { detectDeviceCapabilities, type DeviceCapabilities } from './device-capabilities';
 import { LocalModelEngine, type GenerationMetrics } from './engine';
@@ -85,13 +86,21 @@ function App() {
       return;
     }
     const startedAt = Date.now();
-    setBusy(true);
-    setLoadingElapsed(0);
-    setLoadError(null);
-    setLoadStartedAt(startedAt);
-    setLoadingStage('読み込みを準備中');
-    setStatus('モデルを読み込み中。画面を閉じないでください');
-    setLoadingStage('読み込みを準備中');
+    console.info('[Local Codex][Model Load] 読み込みボタンのクリックを検知', {
+      fileName: file.name,
+      fileSizeBytes: file.size,
+      timestamp: new Date(startedAt).toISOString()
+    });
+    // Force React to paint the loading state synchronously before starting any
+    // file/WASM work. This avoids relying on Safari's next animation frame.
+    flushSync(() => {
+      setBusy(true);
+      setLoadingElapsed(0);
+      setLoadError(null);
+      setLoadStartedAt(startedAt);
+      setLoadingStage('読み込みを開始しました');
+      setStatus('読み込みボタンを検知。GGUFの読み込み処理を開始します');
+    });
     try {
       localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'running', stage: '読み込みを準備中', startedAt: new Date().toISOString(), fileName: file.name, fileSize: file.size }));
     } catch (storageError) {
@@ -106,8 +115,7 @@ function App() {
       userAgent: navigator.userAgent
     });
     try {
-      // Let Safari paint the loading state before file parsing / WASM work begins.
-      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      // Start the engine directly after the synchronous UI update above.
       await engine.load(file, (stage) => {
         setLoadingStage(stage);
         setStatus('モデルを読み込み中：' + stage);
@@ -247,7 +255,7 @@ function App() {
           {file
             ? <div className="selected-file">{file.name} · {(file.size / 1024 ** 3).toFixed(2)} GB</div>
             : <p className="muted">まだファイルが選択されていません。先にGGUFファイルを選んでね。</p>}
-          <button className="primary-button" disabled={busy} onClick={loadModel}>{busy ? '処理中…' : 'このGGUFをiPhone内で読み込む'}</button>
+          <button type="button" className="primary-button" disabled={busy} onClick={() => { console.info("[Local Codex][UI] GGUF読み込みボタンが押されました"); void loadModel(); }}>{busy ? '処理中…' : 'このGGUFをiPhone内で読み込む'}</button>
           {loadedModel && <div className="loaded-row"><span>読み込み済み：{loadedModel}</span><button className="text-button" onClick={unloadModel} disabled={busy}>解放</button></div>}
         </div>
       </section>}
