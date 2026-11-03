@@ -36,7 +36,22 @@ export class LocalModelEngine {
     }
 
     log('runtime-init', 'WASMランタイムを初期化中');
-    const runtime = new Wllama({ default: wasmUrl });
+    const runtime = new Wllama(
+      { default: wasmUrl },
+      {
+        logger: {
+          debug: (...args: unknown[]) => console.debug('[wllama]', ...args),
+          log: (...args: unknown[]) => console.info('[wllama]', ...args),
+          warn: (...args: unknown[]) => console.warn('[wllama]', ...args),
+          error: (...args: unknown[]) => console.error('[wllama]', ...args)
+        }
+      }
+    );
+    log('runtime-ready', 'WASMランタイムを作成しました', {
+      libllamaVersion: Wllama.getLibLlamaVersion(),
+      webGPUAvailable: runtime.isSupportWebGPU(),
+      loadMode: 'CPU only / single thread'
+    });
 
     try {
       // wllama v3 の loadModel(File[]) はローカルファイル用の進捗率callbackを公開していない。
@@ -44,7 +59,18 @@ export class LocalModelEngine {
       log('model-load', 'WASM・GGUF解析・モデルデータ展開を実行中', {
         note: 'ローカルloadModel APIに進捗率callbackはありません'
       });
-      await runtime.loadModel([file], { n_ctx: 2048, n_batch: 128 });
+      log('model-load-options', 'CPU専用設定でモデル読み込みを開始', {
+        contextSize: 2048,
+        batchSize: 128,
+        gpuLayers: 0,
+        threads: 1
+      });
+      await runtime.loadModel([file], {
+        n_ctx: 2048,
+        n_batch: 128,
+        n_gpu_layers: 0,
+        n_threads: 1
+      });
 
       if (!runtime.isModelLoaded()) {
         throw new Error('loadModel()は終了しましたが、wllamaがモデル読み込み完了を確認できませんでした。');
