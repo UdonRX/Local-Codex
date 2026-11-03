@@ -22,12 +22,12 @@ export async function detectDeviceCapabilities(): Promise<DeviceCapabilities> {
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const wasmSimd = (() => {
     try {
-      // A minimal module using i8x16.splat; validate() returns false without SIMD support.
+      // Minimal valid module using i8x16.splat; false means SIMD validation failed.
       return WebAssembly.validate(new Uint8Array([
         0,97,115,109,1,0,0,0,
         1,5,1,96,0,1,123,
         3,2,1,0,
-        10,10,1,8,0,65,0,253,15,11
+        10,8,1,6,0,65,0,253,15,11
       ]));
     } catch { return false; }
   })();
