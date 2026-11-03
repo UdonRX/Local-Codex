@@ -18,6 +18,9 @@ function App() {
   const [file, setFile] = useState<File | null>(null);
   const [loadedModel, setLoadedModel] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loadingStage, setLoadingStage] = useState<string | null>(null);
+  const [loadStartedAt, setLoadStartedAt] = useState<number | null>(null);
+  const [loadingElapsed, setLoadingElapsed] = useState(0);
   const [status, setStatus] = useState('端末診断を実行中');
   const [prompt, setPrompt] = useState('TypeScriptで配列の重複を除去し、元の順序を維持する関数を書いて。');
   const [output, setOutput] = useState('');
@@ -39,16 +42,61 @@ function App() {
   }, []);
   useEffect(() => { localStorage.setItem('local-codex-results', JSON.stringify(results)); }, [results]);
 
+  useEffect(() => {
+    if (loadStartedAt === null) return;
+    const updateElapsed = () => setLoadingElapsed(Math.floor((Date.now() - loadStartedAt) / 1000));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [loadStartedAt]);
+
+  useEffect(() => {
+    if (loadStartedAt === null || loadingStage === null) return;
+    const timer = window.setInterval(() => {
+      console.info('[Local Codex][Model Load] まだ処理中', {
+        stage: loadingStage,
+        elapsedSeconds: Math.floor((Date.now() - loadStartedAt) / 1000),
+        hint: 'この工程はwllama内部処理のため、ローカルloadModelから進捗率を取得できません'
+      });
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [loadStartedAt, loadingStage]);
+
   async function loadModel() {
     if (!file) return;
-    setBusy(true); setStatus('モデルを読み込み中。画面を閉じないでください'); setOutput(''); setMetrics(null);
+    const startedAt = Date.now();
+    setBusy(true);
+    setLoadingElapsed(0);
+    setLoadStartedAt(startedAt);
+    setLoadingStage('読み込みを準備中');
+    setStatus('モデルを読み込み中。画面を閉じないでください');
+    setOutput('');
+    setMetrics(null);
+    console.info('[Local Codex][Model Load] 読み込み開始', {
+      fileName: file.name,
+      fileSizeBytes: file.size,
+      fileSizeMB: Number((file.size / 1024 ** 2).toFixed(1)),
+      userAgent: navigator.userAgent
+    });
     try {
-      await engine.load(file);
-      setLoadedModel(file.name); setStatus('モデル読み込み完了');
+      await engine.load(file, (stage) => {
+        setLoadingStage(stage);
+        setStatus('モデルを読み込み中：' + stage);
+      });
+      setLoadedModel(file.name);
+      setStatus('モデル読み込み完了');
     } catch (error) {
+      console.error('[Local Codex][Model Load] UI側でエラーを検知', error);
       setStatus(error instanceof Error ? error.message : 'モデル読み込みに失敗しました');
       setLoadedModel(null);
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+      setLoadingStage(null);
+      setLoadStartedAt(null);
+      console.info('[Local Codex][Model Load] UI処理終了', {
+        elapsedSeconds: Number(((Date.now() - startedAt) / 1000).toFixed(1))
+      });
+    }
   }
 
   async function runPrompt(text: string) {
@@ -136,7 +184,15 @@ function App() {
           <input className="file-input" type="file" accept=".gguf" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
           {file && <div className="selected-file">{file.name} · {(file.size / 1024 ** 3).toFixed(2)} GB</div>}
           <button className="primary-button" disabled={!file || busy} onClick={loadModel}>{busy ? '処理中…' : 'このGGUFをiPhone内で読み込む'}</button>
-          {loadedModel && <div className="loaded-row"><span>読み込み中：{loadedModel}</span><button className="text-button" onClick={unloadModel} disabled={busy}>解放</button></div>}
+          {loadingStage && <div className="model-loading-panel" role="status" aria-live="polite">
+            <div className="loading-heading"><strong>モデルを読み込み中</strong><span>{loadingElapsed}秒経過</span></div>
+            <div className="loading-stage">{loadingStage}</div>
+            <div className="progress-track" role="progressbar" aria-label="モデル読み込み状況" aria-valuetext="処理中。正確な進捗率は取得できません">
+              <div className="progress-indicator" />
+            </div>
+            <p>このローカルファイル読み込み処理は、wllama側から進捗率が通知されないため、バーは進行中を示す表示だよ。完了・エラーはコンソールにも記録される。</p>
+          </div>}
+          {loadedModel && <div className="loaded-row"><span>読み込み済み：{loadedModel}</span><button className="text-button" onClick={unloadModel} disabled={busy}>解放</button></div>}
         </div>
       </section>}
 
