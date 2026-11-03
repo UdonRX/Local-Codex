@@ -18,10 +18,22 @@ function App() {
   const [file, setFile] = useState<File | null>(null);
   const [loadedModel, setLoadedModel] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [loadingStage, setLoadingStage] = useState<string | null>(null);
+  const [loadingStage, setLoadingStage] = useState<string | null>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('local-codex-load-diagnostic') || 'null');
+      return saved?.state === 'running' ? '前回の読み込み中に画面が終了した可能性があります' : saved?.stage ?? null;
+    } catch { return null; }
+  });
   const [loadStartedAt, setLoadStartedAt] = useState<number | null>(null);
   const [loadingElapsed, setLoadingElapsed] = useState(0);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('local-codex-load-diagnostic') || 'null');
+      return saved?.state === 'running'
+        ? '読み込み開始後にページが再起動したか、処理が中断された可能性があります。時間・端末メモリ・WASM初期化を調査するため、もう一度実行して診断記録を残してください。'
+        : saved?.error ?? null;
+    } catch { return null; }
+  });
   const [status, setStatus] = useState('端末診断を実行中');
   const [prompt, setPrompt] = useState('TypeScriptで配列の重複を除去し、元の順序を維持する関数を書いて。');
   const [output, setOutput] = useState('');
@@ -79,6 +91,12 @@ function App() {
     setLoadStartedAt(startedAt);
     setLoadingStage('読み込みを準備中');
     setStatus('モデルを読み込み中。画面を閉じないでください');
+    setLoadingStage('読み込みを準備中');
+    try {
+      localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'running', stage: '読み込みを準備中', startedAt: new Date().toISOString(), fileName: file.name, fileSize: file.size }));
+    } catch (storageError) {
+      console.warn('[Local Codex][Model Load] 診断状態を保存できません', storageError);
+    }
     setOutput('');
     setMetrics(null);
     console.info('[Local Codex][Model Load] 読み込み開始', {
@@ -88,19 +106,32 @@ function App() {
       userAgent: navigator.userAgent
     });
     try {
+      // Let Safari paint the loading state before file parsing / WASM work begins.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       await engine.load(file, (stage) => {
         setLoadingStage(stage);
         setStatus('モデルを読み込み中：' + stage);
+        try {
+          localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'running', stage, startedAt: new Date(startedAt).toISOString(), fileName: file.name, fileSize: file.size }));
+        } catch (storageError) {
+          console.warn('[Local Codex][Model Load] 診断状態を保存できません', storageError);
+        }
       });
       setLoadedModel(file.name);
       setLoadError(null);
       setLoadingStage(null);
+      localStorage.removeItem('local-codex-load-diagnostic');
       setStatus('モデル読み込み完了');
     } catch (error) {
       console.error('[Local Codex][Model Load] UI側でエラーを検知', error);
       const message = error instanceof Error ? error.message : 'モデル読み込みに失敗しました';
       setLoadError(message);
       setLoadingStage('読み込みに失敗しました');
+      try {
+        localStorage.setItem('local-codex-load-diagnostic', JSON.stringify({ state: 'error', stage: '読み込みに失敗しました', error: message, failedAt: new Date().toISOString(), fileName: file.name, fileSize: file.size }));
+      } catch (storageError) {
+        console.warn('[Local Codex][Model Load] エラー内容を保存できません', storageError);
+      }
       setStatus('モデル読み込みに失敗しました：' + message);
       setLoadedModel(null);
     } finally {
