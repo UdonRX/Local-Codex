@@ -188,6 +188,55 @@ async function collectMemorySnapshot(fileSizeBytes: number): Promise<MemorySnaps
   };
 }
 
+function isIOSSafari(): boolean {
+  const ua = navigator.userAgent;
+  const platform = navigator.platform;
+  const isIOSDevice = /iPhone|iPad|iPod/i.test(ua) ||
+    (platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return isIOSDevice && /AppleWebKit/i.test(ua);
+}
+
+async function preflightCompatWasm(url: string): Promise<Record<string, unknown>> {
+  const response = await fetch(url, { cache: 'no-store', credentials: 'same-origin' });
+  if (!response.ok) throw new Error(`compat WASM取得失敗: HTTP ${response.status} (${url})`);
+  const contentType = response.headers.get('content-type') ?? '';
+  let module: WebAssembly.Module;
+  let compileMethod = 'compileStreaming';
+  try {
+    if (typeof WebAssembly.compileStreaming !== 'function') throw new Error('compileStreaming unavailable');
+    module = await WebAssembly.compileStreaming(response.clone());
+  } catch (streamError) {
+    compileMethod = 'compile(arrayBuffer fallback)';
+    try {
+      module = await WebAssembly.compile(await response.arrayBuffer());
+    } catch (compileError) {
+      const detail = compileError instanceof Error ? compileError.message : String(compileError);
+      const streamingDetail = streamError instanceof Error ? streamError.message : String(streamError);
+      throw new Error(`compat WASM compile failed: ${detail}; streaming: ${streamingDetail}`);
+    }
+  }
+  return {
+    requestedUrl: url,
+    responseUrl: response.url,
+    contentType,
+    contentLength: response.headers.get('content-length'),
+    compileMethod,
+    compileSucceeded: true,
+    importCount: WebAssembly.Module.imports(module).length,
+    exportCount: WebAssembly.Module.exports(module).length,
+    memory64RejectedByThisBrowser: false
+  };
+}
+
+async function sha256Text(value: string): Promise<string | null> {
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return null;
+  }
+}
+
 function classifyLoadError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/out of memory|oom|memory access out of bounds|allocation failed|cannot enlarge memory|bad alloc/i.test(message)) {
@@ -234,6 +283,11 @@ export class LocalModelEngine {
         try { return JSON.stringify(item); } catch { return String(item); }
       })()).join(' ');
       console[level === 'log' ? 'info' : level === 'debug' ? 'info' : level]('[wllama][' + level + ']', ...args);
+      const wasmRequest = text.match(/Loading ["']wllama\.wasm["'] from ["']([^"']+)["']/i);
+      if (wasmRequest) {
+        console.info('[Local Codex][WASM] Worker requested WASM', { wasmUrl: wasmRequest[1], phase: currentPhase });
+        report('wasm_load_requested', { wasmUrl: wasmRequest[1], phase: currentPhase, elapsedSeconds: elapsed() });
+      }
       if (/Calling wllamaStart|Loading model|error|failed|exception|abort|memory/i.test(text)) {
         report('wllama_log', { level, message: text.slice(0, 1600), elapsedSeconds: elapsed(), phase: currentPhase });
       }
@@ -277,6 +331,9 @@ export class LocalModelEngine {
       await this.unload();
     }
 
+    const forceIOSCompat = isIOSSafari();
+    const compatWasmAbsoluteUrl = new URL(compatWasmUrl, document.baseURI).href;
+
     // The default wllama WASM uses Memory64, which current Safari/iOS does not parse.
     // Enable the official Safari compatibility build before any WASM is fetched or compiled.
     setPhase('Safari互換WASMを準備中', 'iPhone用のSafari互換WASMを準備中');
@@ -303,6 +360,35 @@ export class LocalModelEngine {
       wasm: compatWasmUrl,
       worker: { code: compatWorkerCode }
     });
+    const detectedGetWorkerResources = runtime.getWorkerResources.bind(runtime);
+    runtime.getWorkerResources = () => {
+      const detected = detectedGetWorkerResources();
+      if (!forceIOSCompat) return detected;
+      const forced = {
+        ...detected,
+        wasmPath: compatWasmAbsoluteUrl,
+        jsPath: { code: compatWorkerCode },
+        compat: true
+      };
+      console.info('[Local Codex][WASM Compatibility] iOS compat resources forced', {
+        detectedCompat: detected.compat,
+        selectedCompat: forced.compat,
+        selectedWasmUrl: forced.wasmPath,
+        workerSource: 'bundled @wllama/wllama-compat/wasm/wllama.js',
+        workerSourceBytes: compatWorkerCode.length
+      });
+      report('runtime_resources_selected', {
+        platform: navigator.platform,
+        userAgent: navigator.userAgent,
+        forcedForIOS: true,
+        detectedCompat: detected.compat,
+        selectedCompat: forced.compat,
+        selectedWasmUrl: forced.wasmPath,
+        workerSource: 'bundled @wllama/wllama-compat/wasm/wllama.js',
+        workerSourceBytes: compatWorkerCode.length
+      });
+      return forced;
+    };
     console.info('[Local Codex][Runtime Info]', {
       libllamaVersion: Wllama.getLibllamaVersion(),
       webGPUAvailable: runtime.isSupportWebGPU(),
@@ -375,7 +461,38 @@ export class LocalModelEngine {
     try {
       window.addEventListener('error', onWindowError);
       window.addEventListener('unhandledrejection', onUnhandledRejection);
-      report('load_started', { phase: currentPhase, userAgent: navigator.userAgent, platform: navigator.platform, isStandalone: window.matchMedia('(display-mode: standalone)').matches });
+      report('load_started', {
+        phase: currentPhase,
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        isStandalone: window.matchMedia('(display-mode: standalone)').matches,
+        forceIOSCompat
+      });
+      if (forceIOSCompat) {
+        setPhase('compat WASM事前コンパイル確認', 'iPhone用compat WASMを取得・コンパイル確認中');
+        report('compat_wasm_preflight_started', {
+          wasmUrl: compatWasmAbsoluteUrl,
+          workerSource: '@wllama/wllama-compat/wasm/wllama.js',
+          workerSourceBytes: compatWorkerCode.length
+        });
+        try {
+          const preflight = await preflightCompatWasm(compatWasmAbsoluteUrl);
+          console.info('[Local Codex][compat WASM preflight] success', preflight);
+          report('compat_wasm_preflight_success', preflight);
+        } catch (preflightError) {
+          const detail = preflightError instanceof Error
+            ? { name: preflightError.name, message: preflightError.message, stack: preflightError.stack }
+            : { message: String(preflightError) };
+          console.error('[Local Codex][compat WASM preflight] failed', detail);
+          report('compat_wasm_preflight_failed', { wasmUrl: compatWasmAbsoluteUrl, error: detail });
+          throw preflightError;
+        }
+        report('compat_worker_source_ready', {
+          source: '@wllama/wllama-compat/wasm/wllama.js',
+          byteLength: compatWorkerCode.length,
+          sha256: await sha256Text(compatWorkerCode)
+        });
+      }
       // wllama 3.8.1 internal sequence:
       // Worker proxy setup -> prepareBlobs -> moduleInit -> wllamaStart -> native load.
       // The library does not expose callbacks for these internal steps, so observe
@@ -417,7 +534,39 @@ export class LocalModelEngine {
               });
             }
             setPhase('moduleInit開始', 'moduleInit開始（互換Worker生成・WASMモジュール初期化）');
+            const workerScriptUrl = typeof args[0] === 'string' ? args[0] : String(args[0] ?? '');
+            const workerOptions = args[1] && typeof args[1] === 'object'
+              ? { type: (args[1] as WorkerOptions).type ?? 'classic', credentials: (args[1] as WorkerOptions).credentials ?? 'same-origin' }
+              : {};
             const worker = Reflect.construct(target, args, newTarget) as Worker;
+            if (workerScriptUrl.startsWith('blob:')) {
+              void fetch(workerScriptUrl).then((response) => response.text()).then(async (script) => {
+                const runOptionsMatch = script.match(/const RUN_OPTIONS = (\{[^\n]*\});/);
+                let runOptions: Record<string, unknown> | null = null;
+                if (runOptionsMatch) {
+                  try { runOptions = JSON.parse(runOptionsMatch[1]) as Record<string, unknown>; } catch { /* Keep raw inspection fields below. */ }
+                }
+                const pathConfig = runOptions?.pathConfig as Record<string, unknown> | undefined;
+                const detail = {
+                  workerScriptUrl,
+                  workerOptions,
+                  workerScriptBytes: script.length,
+                  workerScriptSha256: await sha256Text(script),
+                  runOptionsFound: !!runOptions,
+                  compat: runOptions?.compat ?? null,
+                  wasmUrl: pathConfig?.['wllama.wasm'] ?? null,
+                  workerCodeContainsCompatMarker: script.includes('compat')
+                };
+                console.info('[Local Codex][Worker Runtime] actual worker script inspected', detail);
+                report('worker_runtime_selected', { phase: currentPhase, elapsedSeconds: elapsed(), ...detail });
+              }).catch((inspectionError) => {
+                const detail = inspectionError instanceof Error ? inspectionError.message : String(inspectionError);
+                console.warn('[Local Codex][Worker Runtime] worker script inspection failed', detail);
+                report('worker_runtime_inspection_failed', { workerScriptUrl, error: detail, phase: currentPhase });
+              });
+            } else {
+              report('worker_runtime_selected', { phase: currentPhase, workerScriptUrl, workerOptions, note: 'Worker URL is not a blob URL; inline source inspection was not applicable' });
+            }
             // Intercept the onmessage property used by wllama 3.8.1. Safari-compatible
             // builds may emit signal.abort with a one-item payload, while wllama's
             // receiver assumes the four-item Emscripten payload. Normalize only that
