@@ -21,6 +21,7 @@ function App() {
   const [loadingStage, setLoadingStage] = useState<string | null>(null);
   const [loadStartedAt, setLoadStartedAt] = useState<number | null>(null);
   const [loadingElapsed, setLoadingElapsed] = useState(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [status, setStatus] = useState('端末診断を実行中');
   const [prompt, setPrompt] = useState('TypeScriptで配列の重複を除去し、元の順序を維持する関数を書いて。');
   const [output, setOutput] = useState('');
@@ -67,6 +68,7 @@ function App() {
     const startedAt = Date.now();
     setBusy(true);
     setLoadingElapsed(0);
+    setLoadError(null);
     setLoadStartedAt(startedAt);
     setLoadingStage('読み込みを準備中');
     setStatus('モデルを読み込み中。画面を閉じないでください');
@@ -84,14 +86,20 @@ function App() {
         setStatus('モデルを読み込み中：' + stage);
       });
       setLoadedModel(file.name);
+      setLoadError(null);
+      setLoadingStage(null);
       setStatus('モデル読み込み完了');
     } catch (error) {
       console.error('[Local Codex][Model Load] UI側でエラーを検知', error);
-      setStatus(error instanceof Error ? error.message : 'モデル読み込みに失敗しました');
+      const message = error instanceof Error ? error.message : 'モデル読み込みに失敗しました';
+      setLoadError(message);
+      setLoadingStage('読み込みに失敗しました');
+      setStatus('モデル読み込みに失敗しました：' + message);
       setLoadedModel(null);
     } finally {
       setBusy(false);
-      setLoadingStage(null);
+      // Keep the last stage and error visible after a fast failure. Clear them only
+      // when the user starts another attempt or a later attempt succeeds.
       setLoadStartedAt(null);
       console.info('[Local Codex][Model Load] UI処理終了', {
         elapsedSeconds: Number(((Date.now() - startedAt) / 1000).toFixed(1))
@@ -145,6 +153,16 @@ function App() {
         )}
       </nav>
       <div className="status-line"><span className="status-dot" />{status}</div>
+      {loadingStage && <section className="model-loading-panel global-loading-panel" role="status" aria-live="polite">
+        <div className="loading-heading"><strong>{loadError ? 'モデル読み込みエラー' : busy ? 'モデルを読み込み中' : '前回の読み込み結果'}</strong><span>{loadingElapsed}秒</span></div>
+        <div className="loading-stage">{loadingStage}</div>
+        {busy && <div className="progress-track" role="progressbar" aria-label="モデル読み込み状況" aria-valuetext="処理中。正確な進捗率は取得できません">
+          <div className="progress-indicator" />
+        </div>}
+        {loadError
+          ? <p className="load-error-message">エラー内容：{loadError}<br />コンソールの [Local Codex] / [wllama] ログも確認してね。もう一度試す場合は、モデルタブから再読み込みできるよ。</p>
+          : <p>{busy ? '読み込み中は画面を切り替えてもこの表示を残すよ。バーは進行中を示す表示で、正確な進捗率ではありません。' : '読み込み処理は終了しました。'}</p>}
+      </section>}
 
       {tab === 'overview' && <section className="content-stack">
         <div className="section-heading"><div><div className="eyebrow">DEVICE PROFILE</div><h2>このiPhoneの実行能力</h2></div><span className="subtle-tag">LIVE CHECK</span></div>
@@ -184,14 +202,6 @@ function App() {
           <input className="file-input" type="file" accept=".gguf" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
           {file && <div className="selected-file">{file.name} · {(file.size / 1024 ** 3).toFixed(2)} GB</div>}
           <button className="primary-button" disabled={!file || busy} onClick={loadModel}>{busy ? '処理中…' : 'このGGUFをiPhone内で読み込む'}</button>
-          {loadingStage && <div className="model-loading-panel" role="status" aria-live="polite">
-            <div className="loading-heading"><strong>モデルを読み込み中</strong><span>{loadingElapsed}秒経過</span></div>
-            <div className="loading-stage">{loadingStage}</div>
-            <div className="progress-track" role="progressbar" aria-label="モデル読み込み状況" aria-valuetext="処理中。正確な進捗率は取得できません">
-              <div className="progress-indicator" />
-            </div>
-            <p>このローカルファイル読み込み処理は、wllama側から進捗率が通知されないため、バーは進行中を示す表示だよ。完了・エラーはコンソールにも記録される。</p>
-          </div>}
           {loadedModel && <div className="loaded-row"><span>読み込み済み：{loadedModel}</span><button className="text-button" onClick={unloadModel} disabled={busy}>解放</button></div>}
         </div>
       </section>}
